@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: triage_db
+    environment:
+      POSTGRES_USER: triage_user
+      POSTGRES_PASSWORD: triage_pass
+      POSTGRES_DB: triage_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U triage_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache & Queue State
+  redis:
+    image: redis:7-alpine
+    container_name: triage_cache
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Python Triage Engine (FastAPI)
+  triage_engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.triage
+    container_name: triage_engine
+    ports:
+      - "5001:5001"
+    environment:
+      POSTGRES_URL: postgresql://triage_user:triage_pass@postgres:5432/triage_db
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./triage_engine:/app
+    command: python main.py
+
+  # Ollama LLM Service (Optional - for advanced features)
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama_llm
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     OLLAMA_HOST: 0.0.0.0:11434
+
+volumes:
+  postgres_data:
+  # ollama_data:
+
+networks:
+  default:
+    name: triage_network

@@ -1,0 +1,9 @@
+{
+  "expo": {
+    "name": "Triage Patient App",
+    "slug": "triage-patient-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "platforms": ["ios", "android", "web"]
+  }
+}

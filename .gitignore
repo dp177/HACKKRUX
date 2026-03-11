@@ -1,0 +1,82 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Node.js / JavaScript
+node_modules/
+.npm/
+.pnpm-store/
+
+# Next.js / Web build
+web/.next/
+web/out/
+web/.turbo/
+web/.vercel/
+web/coverage/
+
+# React Native / Expo (mobile)
+mobile/.expo/
+mobile/.expo-shared/
+mobile/.metro-cache/
+mobile/android/
+mobile/ios/
+mobile/dist/
+mobile/build/
+
+# Backend build / runtime
+backend/dist/
+backend/build/
+backend/coverage/
+backend/.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.venv/
+venv/
+env/
+
+# Triage engine artifacts
+triage_engine/venv/
+triage_engine/.pytest_cache/
+triage_engine/__pycache__/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test and coverage artifacts
+coverage/
+.coverage
+.coverage.*
+htmlcov/
+
+# Temp files
+*.tmp
+*.temp
+.cache/
