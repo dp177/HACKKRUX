@@ -32,6 +32,8 @@ web/out/
 web/.turbo/
 web/.vercel/
 web/coverage/
+# Legacy app dir that shadows web/src/app — must never exist
+web/app/
 
 # React Native / Expo (mobile)
 mobile/.expo/

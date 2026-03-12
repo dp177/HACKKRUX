@@ -1,4 +1,12 @@
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://localhost:5000/api';
+import { Platform } from 'react-native';
+
+const DEFAULT_API_BASE_URL = Platform.select({
+  android: 'http://10.0.2.2:5000/api',
+  ios: 'http://localhost:5000/api',
+  default: 'http://localhost:5000/api'
+});
+
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -80,5 +88,25 @@ export function receptionistWalkinCheckin(payload) {
   return request('/walkins/receptionist-checkin', {
     method: 'POST',
     body: JSON.stringify(payload)
+  });
+}
+
+export function authenticateWithGoogle(idToken) {
+  return request('/auth/google', {
+    method: 'POST',
+    body: JSON.stringify({ idToken })
+  });
+}
+
+export function getCurrentUser(token) {
+  return request('/auth/me', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export function logoutAuth(token) {
+  return request('/auth/logout', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
   });
 }

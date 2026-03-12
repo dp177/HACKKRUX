@@ -1,0 +1,69 @@
+services:
+  - type: web
+    name: hackkrux-backend
+    env: node
+    plan: free
+    buildCommand: "cd backend && npm install"
+    startCommand: "cd backend && npm start"
+    
+    # Auto-deploy on git push to main
+    autoDeployOnPush: true
+    
+    # Health check
+    healthCheckPath: /health
+    
+    # Environment variables (set these in Render dashboard)
+    envVars:
+      - key: NODE_ENV
+        value: production
+      
+      - key: PORT
+        value: 10000
+      
+      - key: MONGODB_URI
+        sync: false  # Keep your MongoDB connection in Render dashboard environment
+      
+      - key: JWT_SECRET
+        sync: false  # IMPORTANT: Generate a new secret and set in Render dashboard
+      
+      - key: CORS_ORIGINS
+        value: "https://your-frontend-domain.com,https://your-mobile-app-domain.com"
+      
+      - key: GOOGLE_OAUTH_CLIENT_IDS
+        value: "(your-google-client-id.apps.googleusercontent.com)"
+      
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false  # Keep this secret in Render dashboard
+      
+      - key: GOOGLE_MOBILE_CALLBACK_URL
+        sync: false  # Will be set to https://your-render-url.onrender.com/api/auth/google/mobile/callback
+
+# ═══════════════════════════════════════════════════════════════
+# DEPLOYMENT INSTRUCTIONS:
+# ═══════════════════════════════════════════════════════════════
+#
+# 1. Connect your GitHub repo to Render.com
+#
+# 2. Create a new Web Service:
+#    - GitHub Repo: select your HACKKRUX repo
+#    - Name: hackkrux-backend
+#    - Environment: Node
+#    - Build Command: cd backend && npm install
+#    - Start Command: cd backend && npm start
+#    - Plan: Free (or paid if you want better uptime)
+#
+# 3. Add Environment Variables in Render Dashboard:
+#    MONGODB_URI=mongodb+srv://dp177:dp177@hack.hq0o67r.mongodb.net/triage_db?retryWrites=true&w=majority&appName=hack
+#    JWT_SECRET=(generate new: openssl rand -base64 32)
+#    GOOGLE_CLIENT_SECRET=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
+#    GOOGLE_MOBILE_CALLBACK_URL=https://your-service-name.onrender.com/api/auth/google/mobile/callback
+#
+# 4. Update Google Console Authorized Redirect URIs:
+#    - Add: https://your-service-name.onrender.com/api/auth/google/mobile/callback
+#
+# 5. Update mobile app environment:
+#    EXPO_PUBLIC_API_BASE_URL=https://your-service-name.onrender.com/api
+#
+# 6. Monitor logs in Render Dashboard
+#
+# ═══════════════════════════════════════════════════════════════

@@ -3,7 +3,14 @@
     "name": "Triage Patient App",
     "slug": "triage-patient-app",
     "version": "1.0.0",
+    "scheme": "triagepatientapp",
     "orientation": "portrait",
-    "platforms": ["ios", "android", "web"]
+    "platforms": ["ios", "android", "web"],
+    "android": {
+      "package": "com.hackkrux.triagepatientapp"
+    },
+    "ios": {
+      "bundleIdentifier": "com.hackkrux.triagepatientapp"
+    }
   }
 }

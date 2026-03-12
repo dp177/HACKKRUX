@@ -130,7 +130,7 @@ async function startServer() {
     }
     
     // Start server
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log('');
       console.log('═══════════════════════════════════════════════════════════');
       console.log('  🏥 TRIAGE BACKEND API - RUNNING');
@@ -141,6 +141,28 @@ async function startServer() {
       console.log(`  Triage Engine: ${process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001'}`);
       console.log('═══════════════════════════════════════════════════════════');
       console.log('');
+    });
+
+    // Graceful shutdown (for production)
+    process.on('SIGTERM', () => {
+      console.log('SIGTERM received, gracefully closing server...');
+      server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
+      // Force exit after 10 seconds
+      setTimeout(() => {
+        console.error('Forced shutdown');
+        process.exit(1);
+      }, 10000);
+    });
+
+    process.on('SIGINT', () => {
+      console.log('SIGINT received, gracefully closing server...');
+      server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
     });
     
   } catch (error) {

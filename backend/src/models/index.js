@@ -22,6 +22,7 @@ const TriageRecord = require('./TriageRecord');
 const Visit = require('./Visit');
 const VitalSignRecord = require('./VitalSignRecord');
 const Queue = require('./Queue');
+const User = require('./User');
 const HospitalOnboardingRequest = require('../features/hospital-onboarding/hospitalOnboardingRequestModel');
 const HospitalStaff = require('../features/hospital-portal/hospitalStaffModel');
 
@@ -79,6 +80,7 @@ module.exports = {
   Visit,
   VitalSignRecord,
   Queue,
+  User,
   HospitalOnboardingRequest,
   HospitalStaff,
   

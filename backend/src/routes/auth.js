@@ -6,11 +6,16 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
-const { Doctor, Patient, Department } = require('../models');
-const { generateToken, authenticateDoctor, authenticatePatient } = require('../middleware/auth');
+const { OAuth2Client } = require('google-auth-library');
+const { Doctor, Patient, Department, User } = require('../models');
+const { generateToken, authenticateDoctor, authenticatePatient, verifyToken } = require('../middleware/auth');
 const { sendPatientCredentialsEmail } = require('../utils/credentials');
 
 const SALT_ROUNDS = 10;
+const oauthClient = new OAuth2Client();
+
+// In-memory store for pending mobile OAuth sessions (single-use, expire in 5 min)
+const mobileSessions = new Map();
 
 function normalizeGender(input) {
   if (!input) return null;
@@ -21,6 +26,122 @@ function normalizeGender(input) {
   if (value === 'prefer not to say' || value === 'prefer_not_to_say') return 'Prefer not to say';
   return null;
 }
+
+function getAllowedGoogleAudiences() {
+  return String(process.env.GOOGLE_OAUTH_CLIENT_IDS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GOOGLE AUTH (PATIENT APP)
+// ═══════════════════════════════════════════════════════════════
+
+router.post('/google', async (req, res) => {
+  try {
+    const { idToken } = req.body;
+
+    if (!idToken) {
+      return res.status(400).json({ error: 'idToken is required' });
+    }
+
+    const audience = getAllowedGoogleAudiences();
+    if (!audience.length) {
+      return res.status(500).json({ error: 'GOOGLE_OAUTH_CLIENT_IDS is not configured' });
+    }
+
+    const ticket = await oauthClient.verifyIdToken({
+      idToken,
+      audience
+    });
+
+    const payload = ticket.getPayload();
+    if (!payload?.sub || !payload?.email) {
+      return res.status(401).json({ error: 'Invalid Google token payload' });
+    }
+
+    const googleId = payload.sub;
+    const email = String(payload.email).toLowerCase();
+    const name = payload.name || email;
+    const profilePicture = payload.picture || null;
+
+    let user = await User.findOne({ email });
+    if (!user) {
+      user = await User.create({
+        googleId,
+        email,
+        name,
+        profilePicture,
+        role: 'PATIENT'
+      });
+    } else {
+      user.googleId = googleId;
+      user.name = name;
+      user.profilePicture = profilePicture;
+      if (!user.role) {
+        user.role = 'PATIENT';
+      }
+      await user.save();
+    }
+
+    const token = generateToken(user.id, user.role);
+
+    return res.json({
+      token,
+      user: {
+        id: user.id,
+        googleId: user.googleId,
+        email: user.email,
+        name: user.name,
+        profilePicture: user.profilePicture,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('Google auth error:', error.message);
+    return res.status(401).json({ error: 'Google authentication failed' });
+  }
+});
+
+router.get('/me', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    if (!authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No authentication token provided' });
+    }
+
+    const token = authHeader.slice(7);
+    const decoded = verifyToken(token);
+
+    if (!decoded) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+
+    const user = await User.findById(decoded.userId);
+    if (!user) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+
+    return res.json({
+      user: {
+        id: user.id,
+        googleId: user.googleId,
+        email: user.email,
+        name: user.name,
+        profilePicture: user.profilePicture,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('Auth me error:', error.message);
+    return res.status(500).json({ error: 'Failed to restore session' });
+  }
+});
+
+router.post('/logout', async (_req, res) => {
+  return res.json({ message: 'Logged out successfully' });
+});
 
 // ═══════════════════════════════════════════════════════════════
 // PATIENT REGISTRATION
@@ -421,6 +542,117 @@ router.post('/change-password/doctor', authenticateDoctor, async (req, res) => {
     console.error('Password change error:', error);
     res.status(500).json({ error: 'Failed to change password' });
   }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// GOOGLE AUTH — MOBILE BROWSER FLOW (backend-driven with polling)
+// ═══════════════════════════════════════════════════════════════
+
+// Step 1: Mobile app opens this URL in a browser — backend redirects to Google OAuth
+router.get('/google/mobile', (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).send('sessionId is required');
+
+  const callbackUrl = process.env.GOOGLE_MOBILE_CALLBACK_URL;
+  if (!callbackUrl) {
+    return res.status(500).send('GOOGLE_MOBILE_CALLBACK_URL is not configured in backend .env');
+  }
+
+  const clientId = getAllowedGoogleAudiences()[0];
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  url.searchParams.set('client_id', clientId);
+  url.searchParams.set('redirect_uri', callbackUrl);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('scope', 'openid email profile');
+  url.searchParams.set('state', sessionId);
+  url.searchParams.set('prompt', 'select_account');
+  url.searchParams.set('access_type', 'offline');
+
+  return res.redirect(url.toString());
+});
+
+// Step 2: Google redirects here after user signs in
+router.get('/google/mobile/callback', async (req, res) => {
+  const { code, state: sessionId, error } = req.query;
+
+  if (error || !code) {
+    if (sessionId) mobileSessions.set(sessionId, { error: error || 'No authorization code received' });
+    return res.send('<html><body style="font-family:sans-serif;padding:32px"><h2>\u274c Sign-in failed</h2><p>You can close this tab and return to the app.</p></body></html>');
+  }
+
+  try {
+    const clientId = getAllowedGoogleAudiences()[0];
+    const callbackUrl = process.env.GOOGLE_MOBILE_CALLBACK_URL;
+
+    // Exchange authorization code for tokens
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: callbackUrl,
+        grant_type: 'authorization_code'
+      }).toString()
+    });
+
+    const tokens = await tokenRes.json();
+    if (tokens.error) {
+      if (sessionId) mobileSessions.set(sessionId, { error: tokens.error_description || tokens.error });
+      return res.send('<html><body style="font-family:sans-serif;padding:32px"><h2>\u274c Sign-in failed</h2><p>You can close this tab and return to the app.</p></body></html>');
+    }
+
+    // Get user info with the access token
+    const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` }
+    });
+    const userInfo = await userInfoRes.json();
+
+    const email = String(userInfo.email).toLowerCase();
+    let user = await User.findOne({ email });
+    if (!user) {
+      user = await User.create({
+        googleId: userInfo.sub,
+        email,
+        name: userInfo.name,
+        profilePicture: userInfo.picture,
+        role: 'PATIENT'
+      });
+    } else {
+      user.googleId = userInfo.sub;
+      user.name = userInfo.name;
+      user.profilePicture = userInfo.picture;
+      if (!user.role) user.role = 'PATIENT';
+      await user.save();
+    }
+
+    const token = generateToken(user.id, user.role);
+    mobileSessions.set(sessionId, {
+      token,
+      user: { id: user.id, email: user.email, name: user.name, profilePicture: user.profilePicture, role: user.role }
+    });
+    setTimeout(() => mobileSessions.delete(sessionId), 5 * 60 * 1000);
+
+    return res.send('<html><body style="font-family:sans-serif;padding:32px;text-align:center"><h2>\u2705 Sign-in successful!</h2><p>You can now close this tab and return to the app.</p></body></html>');
+  } catch (err) {
+    console.error('Mobile OAuth callback error:', err);
+    if (sessionId) mobileSessions.set(sessionId, { error: 'Server error during authentication' });
+    return res.send('<html><body style="font-family:sans-serif;padding:32px"><h2>\u274c Sign-in failed</h2><p>Server error. Please try again.</p></body></html>');
+  }
+});
+
+// Step 3: Mobile app polls this until it gets the JWT
+router.get('/google/mobile/result', (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).json({ status: 'error', error: 'sessionId required' });
+
+  const session = mobileSessions.get(sessionId);
+  if (!session) return res.json({ status: 'pending' });
+
+  mobileSessions.delete(sessionId);
+  if (session.error) return res.json({ status: 'error', error: session.error });
+  return res.json({ status: 'success', token: session.token, user: session.user });
 });
 
 module.exports = router;
