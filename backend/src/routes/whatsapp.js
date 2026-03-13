@@ -74,6 +74,10 @@ function normalizePhone(from) {
   return String(from || '').replace(/^whatsapp:/i, '').trim();
 }
 
+function buildTraceId() {
+  return `wa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function normalizeCommand(text) {
   return String(text || '').trim().toLowerCase();
 }
@@ -169,6 +173,14 @@ async function upsertPatientFromWhatsAppName(senderPhone, fullName) {
       email: emailForPhone,
       preferredLanguage: 'English'
     });
+
+    logEvent('info', 'patient_created_from_whatsapp_name', {
+      sender: maskPhone(senderPhone),
+      patientId: String(patient._id),
+      firstName: patient.firstName,
+      email: patient.email
+    });
+
     return patient;
   }
 
@@ -180,7 +192,30 @@ async function upsertPatientFromWhatsAppName(senderPhone, fullName) {
   }
 
   await patient.save();
+
+  logEvent('info', 'patient_updated_from_whatsapp_name', {
+    sender: maskPhone(senderPhone),
+    patientId: String(patient._id),
+    firstName: patient.firstName,
+    email: patient.email
+  });
+
   return patient;
+}
+
+async function loadHospitalOptions(senderId) {
+  const hospitals = await Hospital.find({ isActive: true }).sort({ name: 1 }).limit(9);
+  if (!hospitals.length) {
+    logEvent('warn', 'no_active_hospitals', { sender: maskPhone(senderId) });
+    return [];
+  }
+
+  logEvent('info', 'hospitals_loaded', {
+    sender: maskPhone(senderId),
+    count: hospitals.length
+  });
+
+  return hospitals.map((h) => ({ id: String(h._id), name: h.name }));
 }
 
 function buildFallbackQuestions(historyMessages) {
@@ -313,8 +348,10 @@ function appendMessage(conversation, role, content) {
   touchConversation(conversation);
 }
 
-async function sendAssistant(conversation, res, message) {
+async function sendAssistant(conversation, res, message, traceId = null) {
+  const effectiveTraceId = traceId || res?.locals?.traceId || null;
   logEvent('info', 'assistant_reply', {
+    traceId: effectiveTraceId,
     conversationId: String(conversation._id || ''),
     sender: maskPhone(conversation.senderId),
     step: conversation.step,
@@ -327,6 +364,7 @@ async function sendAssistant(conversation, res, message) {
   res.type('text/xml').send(xml);
 
   logEvent('info', 'twiml_response_sent', {
+    traceId: effectiveTraceId,
     conversationId: String(conversation._id || ''),
     sender: maskPhone(conversation.senderId),
     bytes: Buffer.byteLength(xml)
@@ -337,6 +375,7 @@ async function sendAssistant(conversation, res, message) {
     .save()
     .then(() => {
       logEvent('info', 'conversation_saved', {
+        traceId: effectiveTraceId,
         conversationId: String(conversation._id || ''),
         sender: maskPhone(conversation.senderId),
         step: conversation.step,
@@ -346,6 +385,7 @@ async function sendAssistant(conversation, res, message) {
     })
     .catch((saveError) => {
       logEvent('error', 'conversation_save_failed', {
+        traceId: effectiveTraceId,
         conversationId: String(conversation._id || ''),
         sender: maskPhone(conversation.senderId),
         message: saveError?.message || 'unknown error'
@@ -381,13 +421,76 @@ async function getActiveConversation(senderId) {
 }
 
 router.post('/whatsapp-booking', async (req, res) => {
+  const traceId = buildTraceId();
+  res.locals.traceId = traceId;
+  const requestStartedAt = Date.now();
   const senderRaw = req.body?.From;
   const bodyRaw = req.body?.Body;
   const senderId = normalizePhone(senderRaw);
   const userMsg = String(bodyRaw || '').trim();
   const command = normalizeCommand(userMsg);
 
+  const longRunningTimer = setTimeout(() => {
+    logEvent('warn', 'webhook_long_running', {
+      traceId,
+      sender: maskPhone(senderId),
+      elapsedMs: Date.now() - requestStartedAt,
+      headersSent: res.headersSent
+    });
+  }, 8000);
+
+  res.on('finish', () => {
+    clearTimeout(longRunningTimer);
+    logEvent('info', 'webhook_response_finished', {
+      traceId,
+      sender: maskPhone(senderId),
+      statusCode: res.statusCode,
+      durationMs: Date.now() - requestStartedAt
+    });
+  });
+
+  async function traceStage(stage, run, extra = {}) {
+    const stageStartedAt = Date.now();
+    logEvent('info', 'stage_start', {
+      traceId,
+      sender: maskPhone(senderId),
+      stage,
+      ...extra
+    });
+
+    try {
+      const result = await run();
+      logEvent('info', 'stage_ok', {
+        traceId,
+        sender: maskPhone(senderId),
+        stage,
+        durationMs: Date.now() - stageStartedAt
+      });
+      return result;
+    } catch (error) {
+      logEvent('error', 'stage_failed', {
+        traceId,
+        sender: maskPhone(senderId),
+        stage,
+        durationMs: Date.now() - stageStartedAt,
+        message: error?.message || 'unknown error',
+        stack: error?.stack || null
+      });
+      throw error;
+    }
+  }
+
+  logEvent('info', 'webhook_payload_meta', {
+    traceId,
+    sender: maskPhone(senderId),
+    bodyKeys: Object.keys(req.body || {}),
+    hasWaId: Boolean(req.body?.WaId),
+    hasProfileName: Boolean(req.body?.ProfileName),
+    bodyLength: String(bodyRaw || '').length
+  });
+
   logEvent('info', 'incoming_message', {
+    traceId,
     sender: maskPhone(senderId),
     textPreview: userMsg.slice(0, 120),
     hasBody: Boolean(userMsg)
@@ -395,24 +498,27 @@ router.post('/whatsapp-booking', async (req, res) => {
 
   if (!senderId) {
     logEvent('warn', 'incoming_message_missing_sender');
+    clearTimeout(longRunningTimer);
     return res.status(400).type('text/plain').send('Missing sender');
   }
 
   try {
     const shouldRestart = isRestartCommand(command);
 
-    const existingPatient = await ensurePatientByPhone(senderId);
+    const existingPatient = await traceStage('resolve_patient_by_phone', () => ensurePatientByPhone(senderId));
 
     logEvent('info', 'patient_resolved', {
+      traceId,
       sender: maskPhone(senderId),
       patientId: existingPatient ? String(existingPatient._id) : null,
       exists: Boolean(existingPatient),
       shouldRestart
     });
 
-    let conversation = await getActiveConversation(senderId);
+    let conversation = await traceStage('load_active_conversation', () => getActiveConversation(senderId));
 
     logEvent('info', 'conversation_loaded', {
+      traceId,
       sender: maskPhone(senderId),
       found: Boolean(conversation),
       conversationId: conversation ? String(conversation._id) : null,
@@ -421,15 +527,26 @@ router.post('/whatsapp-booking', async (req, res) => {
     });
 
     if (!conversation || shouldRestart) {
-      await expireActiveConversation(senderId);
+      await traceStage('expire_active_conversation', () => expireActiveConversation(senderId), {
+        shouldRestart,
+        hadConversation: Boolean(conversation)
+      });
 
+      const optionHospitals = await traceStage('load_hospital_options', () => loadHospitalOptions(senderId));
+      if (!optionHospitals.length) {
+        return res.type('text/xml').send(twimlMessage('No active hospitals are available right now. Please try again later.'));
+      }
+
+      const isExistingPatient = Boolean(existingPatient?._id);
       conversation = new WhatsAppConversation({
         senderId,
         patientId: existingPatient?._id,
         status: 'active',
-        step: 'collect_name',
-        collectedData: {},
-        options: {},
+        step: isExistingPatient ? 'choose_hospital' : 'collect_name',
+        collectedData: isExistingPatient
+          ? { patientName: `${existingPatient.firstName || ''} ${existingPatient.lastName || ''}`.trim() }
+          : {},
+        options: isExistingPatient ? { hospitals: optionHospitals } : {},
         aiPendingQuestions: [],
         messages: []
       });
@@ -443,6 +560,15 @@ router.post('/whatsapp-booking', async (req, res) => {
         conversationId: String(conversation._id),
         step: conversation.step
       });
+
+      if (isExistingPatient) {
+        const lines = optionHospitals.map((h, i) => `${i + 1}. ${h.name}`);
+        return sendAssistant(
+          conversation,
+          res,
+          `Welcome back ${existingPatient.firstName || 'Patient'}.\nReply with number to choose hospital:\n${lines.join('\n')}\n\n(Reply START or MENU anytime to restart)`
+        );
+      }
 
       return sendAssistant(
         conversation,
@@ -483,7 +609,11 @@ router.post('/whatsapp-booking', async (req, res) => {
       }
 
       const hospital = hospitals[index];
-      const departments = await Department.find({ hospitalId: hospital.id, isActive: true }).sort({ name: 1 }).limit(9);
+      const departments = await traceStage(
+        'load_departments_for_hospital',
+        () => Department.find({ hospitalId: hospital.id, isActive: true }).sort({ name: 1 }).limit(9),
+        { hospitalId: hospital.id }
+      );
       if (!departments.length) {
         logEvent('warn', 'no_departments_for_hospital', {
           sender: maskPhone(senderId),
@@ -515,22 +645,14 @@ router.post('/whatsapp-booking', async (req, res) => {
         return sendAssistant(conversation, res, 'Please reply with your full name to continue.');
       }
 
-      const patient = await upsertPatientFromWhatsAppName(senderId, userMsg);
+      const patient = await traceStage('upsert_patient_from_name', () => upsertPatientFromWhatsAppName(senderId, userMsg));
       conversation.patientId = patient._id;
       setCollected(conversation, 'patientName', `${patient.firstName} ${patient.lastName}`.trim());
 
-      const hospitals = await Hospital.find({ isActive: true }).sort({ name: 1 }).limit(9);
-      if (!hospitals.length) {
-        logEvent('warn', 'no_active_hospitals', { sender: maskPhone(senderId) });
+      const optionHospitals = await traceStage('load_hospital_options_after_name', () => loadHospitalOptions(senderId));
+      if (!optionHospitals.length) {
         return sendAssistant(conversation, res, 'No active hospitals are available right now. Please try again later.');
       }
-
-      logEvent('info', 'hospitals_loaded', {
-        sender: maskPhone(senderId),
-        count: hospitals.length
-      });
-
-      const optionHospitals = hospitals.map((h) => ({ id: String(h._id), name: h.name }));
       conversation.step = 'choose_hospital';
       setOption(conversation, 'hospitals', optionHospitals);
 
@@ -556,13 +678,18 @@ router.post('/whatsapp-booking', async (req, res) => {
       }
 
       const department = departments[index];
-      const doctors = await Doctor.find({
-        departmentId: department.id,
-        hospitalId: conversation.collectedData.hospitalId,
-        isActive: true
-      })
-        .sort({ isAvailableToday: -1, firstName: 1, lastName: 1 })
-        .limit(9);
+      const doctors = await traceStage(
+        'load_doctors_for_department',
+        () =>
+          Doctor.find({
+            departmentId: department.id,
+            hospitalId: conversation.collectedData.hospitalId,
+            isActive: true
+          })
+            .sort({ isAvailableToday: -1, firstName: 1, lastName: 1 })
+            .limit(9),
+        { departmentId: department.id, hospitalId: conversation.collectedData.hospitalId }
+      );
 
       if (!doctors.length) {
         logEvent('warn', 'no_doctors_for_department', {
@@ -642,7 +769,11 @@ router.post('/whatsapp-booking', async (req, res) => {
       }
 
       const selectedDate = dates[index];
-      const doctor = await Doctor.findById(conversation.collectedData.doctorId);
+      const doctor = await traceStage(
+        'load_doctor_for_date',
+        () => Doctor.findById(conversation.collectedData.doctorId),
+        { doctorId: conversation.collectedData.doctorId }
+      );
       if (!doctor) {
         conversation.status = 'abandoned';
         conversation.step = 'error';
@@ -653,11 +784,16 @@ router.post('/whatsapp-booking', async (req, res) => {
         return sendAssistant(conversation, res, 'Doctor not found now. Please reply START to begin again.');
       }
 
-      const existing = await Appointment.find({
-        doctorId: doctor._id,
-        scheduledDate: selectedDate,
-        status: { $nin: ['cancelled', 'completed', 'no-show'] }
-      }).select('scheduledTime');
+      const existing = await traceStage(
+        'load_existing_appointments_for_slot_calc',
+        () =>
+          Appointment.find({
+            doctorId: doctor._id,
+            scheduledDate: selectedDate,
+            status: { $nin: ['cancelled', 'completed', 'no-show'] }
+          }).select('scheduledTime'),
+        { doctorId: String(doctor._id), selectedDate }
+      );
       const bookedTimes = new Set(existing.map((a) => a.scheduledTime));
 
       const duration = doctor.consultationDuration || 30;
@@ -718,7 +854,13 @@ router.post('/whatsapp-booking', async (req, res) => {
 
     if (step === 'ask_duration') {
       setCollected(conversation, 'duration', userMsg);
-      const patientProfile = conversation.patientId ? await Patient.findById(conversation.patientId).select('preferredLanguage') : null;
+      const patientProfile = conversation.patientId
+        ? await traceStage(
+            'load_patient_language_profile',
+            () => Patient.findById(conversation.patientId).select('preferredLanguage'),
+            { patientId: String(conversation.patientId) }
+          )
+        : null;
       const aiQuestions = await generateNextQuestions(
         conversation.messages,
         patientProfile?.preferredLanguage || 'English'
@@ -749,12 +891,21 @@ router.post('/whatsapp-booking', async (req, res) => {
     if (step === 'ask_comorbidities') {
       setCollected(conversation, 'comorbidities', userMsg);
 
-      const conflict = await Appointment.findOne({
-        doctorId: conversation.collectedData.doctorId,
-        scheduledDate: conversation.collectedData.scheduledDate,
-        scheduledTime: conversation.collectedData.scheduledTime,
-        status: { $nin: ['cancelled', 'completed', 'no-show'] }
-      });
+      const conflict = await traceStage(
+        'check_slot_conflict',
+        () =>
+          Appointment.findOne({
+            doctorId: conversation.collectedData.doctorId,
+            scheduledDate: conversation.collectedData.scheduledDate,
+            scheduledTime: conversation.collectedData.scheduledTime,
+            status: { $nin: ['cancelled', 'completed', 'no-show'] }
+          }),
+        {
+          doctorId: conversation.collectedData.doctorId,
+          date: conversation.collectedData.scheduledDate,
+          time: conversation.collectedData.scheduledTime
+        }
+      );
 
       if (conflict) {
         conversation.status = 'abandoned';
@@ -768,22 +919,32 @@ router.post('/whatsapp-booking', async (req, res) => {
         return sendAssistant(conversation, res, 'That slot was just booked by someone else. Please reply START to book another slot.');
       }
 
-      const appointment = await Appointment.create({
-        patientId: conversation.patientId,
-        doctorId: conversation.collectedData.doctorId,
-        departmentId: conversation.collectedData.departmentId,
-        scheduledDate: conversation.collectedData.scheduledDate,
-        scheduledTime: conversation.collectedData.scheduledTime,
-        duration: 30,
-        chiefComplaint: `${conversation.collectedData.problem} (Duration: ${conversation.collectedData.duration})`,
-        patientNotes: [
-          `Comorbidities: ${conversation.collectedData.comorbidities}`,
-          `AI Follow-up 1: ${conversation.collectedData.aiAnswer1 || 'N/A'}`,
-          `AI Follow-up 2: ${conversation.collectedData.aiAnswer2 || 'N/A'}`
-        ].join(' | '),
-        appointmentType: 'consultation',
-        status: 'scheduled'
-      });
+      const appointment = await traceStage(
+        'create_appointment',
+        () =>
+          Appointment.create({
+            patientId: conversation.patientId,
+            doctorId: conversation.collectedData.doctorId,
+            departmentId: conversation.collectedData.departmentId,
+            scheduledDate: conversation.collectedData.scheduledDate,
+            scheduledTime: conversation.collectedData.scheduledTime,
+            duration: 30,
+            chiefComplaint: `${conversation.collectedData.problem} (Duration: ${conversation.collectedData.duration})`,
+            patientNotes: [
+              `Comorbidities: ${conversation.collectedData.comorbidities}`,
+              `AI Follow-up 1: ${conversation.collectedData.aiAnswer1 || 'N/A'}`,
+              `AI Follow-up 2: ${conversation.collectedData.aiAnswer2 || 'N/A'}`
+            ].join(' | '),
+            appointmentType: 'consultation',
+            status: 'scheduled'
+          }),
+        {
+          patientId: String(conversation.patientId || ''),
+          doctorId: conversation.collectedData.doctorId,
+          date: conversation.collectedData.scheduledDate,
+          time: conversation.collectedData.scheduledTime
+        }
+      );
 
       conversation.status = 'completed';
       conversation.step = 'completed';
@@ -823,6 +984,7 @@ router.post('/whatsapp-booking', async (req, res) => {
     return sendAssistant(conversation, res, 'Session expired. Reply START to begin booking again.');
   } catch (error) {
     logEvent('error', 'whatsapp_booking_error', {
+      traceId,
       sender: maskPhone(senderId),
       message: error?.message || 'unknown error',
       stack: error?.stack || null
