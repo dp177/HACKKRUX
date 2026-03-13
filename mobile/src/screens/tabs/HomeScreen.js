@@ -124,6 +124,7 @@ export default function HomeScreen() {
   const [qrScanBusy, setQrScanBusy] = useState(false);
   const [qrErrorMessage, setQrErrorMessage] = useState('');
   const [loadingDate, setLoadingDate] = useState('');
+  const [bookingReason, setBookingReason] = useState('');
 
   const [form, setForm] = useState({
     chiefComplaint: '',
@@ -347,6 +348,7 @@ export default function HomeScreen() {
     setSelectedDate(todayIso());
     setSelectedSlot('');
     setSelectedSlotId('');
+    setBookingReason('');
     setSlotFallbackMessage('');
     setSlotInfoMessage('');
 
@@ -427,7 +429,11 @@ export default function HomeScreen() {
     const resolvedTime = slot?.time || slot?.startTime || '';
     setSelectedSlot(resolvedTime);
     setSelectedSlotId(slot.slotId || '');
-    pushRoute('triage');
+    if (flowMode === 'booking') {
+      pushRoute('booking_details');
+    } else {
+      pushRoute('triage');
+    }
     console.log('[HomeFlow] select_slot', { slotTime: resolvedTime, slotId: slot.slotId || null });
   }
 
@@ -447,7 +453,7 @@ export default function HomeScreen() {
     }));
   }
 
-  async function handleSubmitFlow() {
+  async function handleSubmitQueueFlow() {
     if (!selectedHospital || !selectedDepartment || !form.chiefComplaint.trim()) {
       Alert.alert('Missing details', 'Please select hospital, department and chief complaint.');
       return;
@@ -482,29 +488,47 @@ export default function HomeScreen() {
         summary: triageResult.summary
       });
 
-      if (flowMode === 'booking' && selectedDoctor && selectedSlot) {
-        try {
-          await bookAppointment(
-            {
-              doctorId: selectedDoctor.id,
-              slotId: selectedSlotId,
-              scheduledDate: selectedDate,
-              scheduledTime: selectedSlot,
-              chiefComplaint: form.chiefComplaint,
-              appointmentType: 'consultation'
-            },
-            token
-          );
-          console.log('[HomeFlow] booking_submit_success');
-        } catch (bookingError) {
-          console.log('[HomeFlow] booking_submit_error', { message: bookingError?.message || 'unknown' });
-        }
-      }
-
       pushRoute('result');
     } catch (error) {
       console.log('[HomeFlow] submit_error', { message: error?.message || 'unknown' });
       Alert.alert('Submission failed', error?.message || 'Unable to process triage right now.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSubmitBookingFlow() {
+    if (!selectedHospital || !selectedDepartment || !selectedDoctor || !selectedDate || !selectedSlot) {
+      Alert.alert('Missing details', 'Please select hospital, department, doctor, date and slot.');
+      return;
+    }
+
+    setSubmitting(true);
+    console.log('[HomeFlow] booking_submit_start', {
+      doctorId: selectedDoctor.id,
+      scheduledDate: selectedDate,
+      scheduledTime: selectedSlot,
+      slotId: selectedSlotId || null
+    });
+
+    try {
+      await bookAppointment(
+        {
+          doctorId: selectedDoctor.id,
+          slotId: selectedSlotId,
+          scheduledDate: selectedDate,
+          scheduledTime: selectedSlot,
+          chiefComplaint: bookingReason.trim() || 'General consultation',
+          appointmentType: 'consultation'
+        },
+        token
+      );
+
+      console.log('[HomeFlow] booking_submit_success');
+      pushRoute('result');
+    } catch (error) {
+      console.log('[HomeFlow] booking_submit_error', { message: error?.message || 'unknown' });
+      Alert.alert('Booking failed', error?.message || 'Unable to book appointment right now.');
     } finally {
       setSubmitting(false);
     }
@@ -525,6 +549,7 @@ export default function HomeScreen() {
       symptomDuration: 24,
       vitalSigns: {}
     });
+    setBookingReason('');
     setHospitalDepartments([]);
     setDoctors([]);
     setSlots([]);
@@ -734,13 +759,44 @@ export default function HomeScreen() {
       <View style={styles.root}>
         <Header title="Triage Form" onBack={popRoute} />
         <View style={styles.contentPage}>
-          <TriageForm values={form} onChange={setFormField} onSubmit={handleSubmitFlow} mode={flowMode} />
+          <TriageForm values={form} onChange={setFormField} onSubmit={handleSubmitQueueFlow} mode={flowMode} />
           {submitting ? (
             <View style={styles.overlay}>
               <ActivityIndicator size="large" color={colors.primary} />
               <Text style={styles.overlayText}>Submitting triage...</Text>
             </View>
           ) : null}
+        </View>
+      </View>
+    );
+  }
+
+  if (currentRoute === 'booking_details') {
+    return (
+      <View style={styles.root}>
+        <Header title="Confirm Booking" onBack={popRoute} />
+        <View style={styles.contentPage}>
+          <View style={styles.bookingCard}>
+            <Text style={styles.bookingTitle}>Simple booking details</Text>
+            <Text style={styles.bookingSubtitle}>Triage is not required for appointments. Add an optional reason and confirm.</Text>
+
+            <Text style={styles.bookingMeta}>Doctor: {selectedDoctor?.name || '-'}</Text>
+            <Text style={styles.bookingMeta}>Date: {selectedDate || '-'}</Text>
+            <Text style={styles.bookingMeta}>Slot: {selectedSlot || '-'}</Text>
+
+            <Text style={styles.bookingLabel}>Reason (optional)</Text>
+            <TextInput
+              value={bookingReason}
+              onChangeText={setBookingReason}
+              placeholder="e.g., Follow-up consultation"
+              placeholderTextColor="#88a0ab"
+              style={styles.bookingInput}
+            />
+
+            <TouchableOpacity style={styles.bookingBtn} onPress={handleSubmitBookingFlow} disabled={submitting}>
+              <Text style={styles.bookingBtnText}>{submitting ? 'Booking...' : 'Confirm Appointment'}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     );
@@ -825,7 +881,7 @@ export default function HomeScreen() {
       <Header title="Submission Result" onBack={popRoute} />
       <View style={styles.contentPage}>
         <View style={styles.resultCard}>
-          <Text style={styles.resultTitle}>Submission Complete</Text>
+          <Text style={styles.resultTitle}>{flowMode === 'booking' ? 'Booking Complete' : 'Submission Complete'}</Text>
           <Text style={styles.resultText}>Hospital: {selectedHospital?.name}</Text>
           <Text style={styles.resultText}>Department: {selectedDepartment?.name}</Text>
           {flowMode === 'booking' && selectedDoctor ? <Text style={styles.resultText}>Doctor: {selectedDoctor?.name}</Text> : null}
@@ -997,6 +1053,58 @@ const styles = StyleSheet.create({
   },
   dateChipTextActive: {
     color: colors.primaryDark
+  },
+  bookingCard: {
+    marginHorizontal: spacing.lg,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    padding: spacing.lg
+  },
+  bookingTitle: {
+    fontFamily: 'Inter_700Bold',
+    color: colors.text,
+    fontSize: 18
+  },
+  bookingSubtitle: {
+    marginTop: 6,
+    marginBottom: spacing.md,
+    fontFamily: 'Inter_400Regular',
+    color: colors.muted,
+    lineHeight: 20
+  },
+  bookingMeta: {
+    fontFamily: 'Inter_600SemiBold',
+    color: colors.text,
+    marginTop: 2
+  },
+  bookingLabel: {
+    marginTop: spacing.md,
+    marginBottom: 6,
+    fontFamily: 'Inter_600SemiBold',
+    color: colors.text
+  },
+  bookingInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontFamily: 'Inter_400Regular',
+    color: colors.text,
+    backgroundColor: '#fff'
+  },
+  bookingBtn: {
+    marginTop: spacing.md,
+    backgroundColor: colors.primary,
+    borderRadius: radii.md,
+    alignItems: 'center',
+    paddingVertical: 12
+  },
+  bookingBtnText: {
+    color: '#fff',
+    fontFamily: 'Inter_700Bold'
   },
   scannerWrap: {
     flex: 1,
