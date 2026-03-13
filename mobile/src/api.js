@@ -409,20 +409,31 @@ export function logoutAuth(token) {
 
 // ── Triage AI ──────────────────────────────────────────────────────────────
 
+// HuggingFace triage AI service (chat questions — no auth needed, no DB write)
+const TRIAGE_AI_BASE = (process.env.EXPO_PUBLIC_TRIAGE_AI_URL || 'https://jeet2207-triage.hf.space').replace(/\/$/, '');
+
 /**
  * Step 1 of the chat loop.
- * Send the conversation history so far; receive the next 1-2 questions from AI.
+ * Calls the HuggingFace AI directly: POST /api/v1/chat/next-questions
+ * Returns the next 1-2 follow-up questions based on the conversation so far.
  *
  * @param {Array<{role: 'user'|'assistant', content: string}>} conversationHistory
- * @param {string} token
  * @returns {Promise<{ questions: string[] }>}
  */
-export function triageChatNext(conversationHistory, token) {
-  return request('/triage/chat-next', {
+export async function triageChatNext(conversationHistory) {
+  const response = await fetch(`${TRIAGE_AI_BASE}/api/v1/chat/next-questions`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ conversation_history: conversationHistory })
   });
+
+  let data = null;
+  try { data = await response.json(); } catch { data = null; }
+
+  if (!response.ok) {
+    throw new Error(data?.detail?.[0]?.msg || data?.error || `chat/next-questions failed: ${response.status}`);
+  }
+  return data; // { questions: string[] }
 }
 
 /**

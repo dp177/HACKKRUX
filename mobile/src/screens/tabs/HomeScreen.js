@@ -4,7 +4,10 @@ import {
   Alert,
   DeviceEventEmitter,
   FlatList,
+  KeyboardAvoidingView,
+  Platform,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -22,8 +25,7 @@ import {
   getDoctorsByDepartment,
   getHospitalByQrIdentifier,
   getHospitalDetails,
-  getHospitals,
-  submitCompleteSingleTriage
+  getHospitals
 } from '../../api';
 import DepartmentSelector from '../../features/care/DepartmentSelector';
 import DoctorSelector from '../../features/care/DoctorSelector';
@@ -128,14 +130,6 @@ export default function HomeScreen() {
   const [bookingReason, setBookingReason] = useState('');
   const [upcomingPreview, setUpcomingPreview] = useState(null);
   const [upcomingPreviewLoading, setUpcomingPreviewLoading] = useState(false);
-
-  const [form, setForm] = useState({
-    chiefComplaint: '',
-    symptoms: [],
-    symptomSeverity: 'moderate',
-    symptomDuration: 24,
-    vitalSigns: {}
-  });
 
   const greetingName = user?.name?.split(' ')[0] || 'Patient';
 
@@ -463,64 +457,25 @@ export default function HomeScreen() {
     console.log('[HomeFlow] select_slot', { slotTime: resolvedTime, slotId: slot.slotId || null });
   }
 
-  function setFormField(path, value) {
-    if (!path.includes('.')) {
-      setForm((prev) => ({ ...prev, [path]: value }));
-      return;
-    }
-
-    const [parent, key] = path.split('.');
-    setForm((prev) => ({
-      ...prev,
-      [parent]: {
-        ...(prev[parent] || {}),
-        [key]: value
-      }
-    }));
-  }
-
-  async function handleSubmitQueueFlow() {
-    if (!selectedHospital || !selectedDepartment || !form.chiefComplaint.trim()) {
-      Alert.alert('Missing details', 'Please select hospital, department and chief complaint.');
-      return;
-    }
-
-    setSubmitting(true);
-    console.log('[HomeFlow] submit_start', { mode: flowMode });
-
-    try {
-      const triagePayload = {
-        patientId: user?.id,
-        chiefComplaint: form.chiefComplaint,
-        symptoms: form.symptoms,
-        symptomSeverity: form.symptomSeverity,
-        symptomDuration: form.symptomDuration,
-        vitalSigns: form.vitalSigns,
-        mode: 'hospital',
-        departmentId: selectedDepartment.id
-      };
-
-      const triageResult = await submitCompleteSingleTriage(triagePayload);
-      console.log('[HomeFlow] triage_submit_success', { triageId: triageResult?.triageId });
-
-      setActiveQueue({
-        hospitalName: selectedHospital.name,
-        departmentName: selectedDepartment.name,
-        priorityLevel: triageResult.priorityLevel,
-        queuePosition: triageResult.queuePosition,
-        estimatedWaitMinutes: triageResult.estimatedWaitMinutes,
-        recommendedSpecialty: triageResult.recommendedSpecialty,
-        riskScore: triageResult.riskScore,
-        summary: triageResult.summary
-      });
-
-      pushRoute('result');
-    } catch (error) {
-      console.log('[HomeFlow] submit_error', { message: error?.message || 'unknown' });
-      Alert.alert('Submission failed', error?.message || 'Unable to process triage right now.');
-    } finally {
-      setSubmitting(false);
-    }
+  function handleTriageComplete(result) {
+    console.log('[HomeFlow] triage_complete', {
+      triageId: result?.triage?.id,
+      riskScore: result?.triage?.risk_score,
+      urgencyLevel: result?.triage?.urgency_level,
+      queuePosition: result?.queue?.queuePosition
+    });
+    setActiveQueue({
+      hospitalName: selectedHospital?.name,
+      departmentName: result?.triage?.department || selectedDepartment?.name,
+      priorityLevel: result?.triage?.urgency_level,
+      queuePosition: result?.queue?.queuePosition,
+      estimatedWaitMinutes: result?.queue?.estimatedWaitMinutes,
+      recommendedSpecialty: result?.triage?.department,
+      riskScore: result?.triage?.risk_score,
+      summary: result?.triage?.explainability_summary,
+      redFlags: result?.triage?.red_flags || []
+    });
+    pushRoute('result');
   }
 
   async function handleSubmitBookingFlow() {
@@ -803,18 +758,27 @@ export default function HomeScreen() {
 
   if (currentRoute === 'triage') {
     return (
-      <View style={styles.root}>
-        <Header title="Triage Form" onBack={popRoute} />
-        <View style={styles.contentPage}>
-          <TriageForm values={form} onChange={setFormField} onSubmit={handleSubmitQueueFlow} mode={flowMode} />
-          {submitting ? (
-            <View style={styles.overlay}>
-              <ActivityIndicator size="large" color={colors.primary} />
-              <Text style={styles.overlayText}>Submitting triage...</Text>
-            </View>
-          ) : null}
-        </View>
-      </View>
+      <KeyboardAvoidingView
+        style={styles.root}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
+        <Header title="AI Triage" onBack={popRoute} />
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <TriageForm
+            patientId={user?.id}
+            token={token}
+            availableDepartments={hospitalDepartments.map((d) => d.name).filter(Boolean)}
+            mode={flowMode}
+            onComplete={handleTriageComplete}
+            onError={(msg) => Alert.alert('Triage Error', msg)}
+          />
+        </ScrollView>
+      </KeyboardAvoidingView>
     );
   }
 
@@ -946,6 +910,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   content: { paddingBottom: spacing.xl },
   contentPage: { paddingTop: spacing.md, paddingBottom: spacing.xl },
+  scrollContent: { paddingTop: spacing.md, paddingBottom: spacing.xl * 2, flexGrow: 1 },
   header: {
     height: 56,
     borderBottomWidth: 1,

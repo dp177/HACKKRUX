@@ -69,7 +69,9 @@ router.post('/chat-next', authenticateAny, async (req, res) => {
 router.post('/analyze', authenticateAny, upload.single('file'), async (req, res) => {
   try {
     const body = req.body || {};
-    const patientId = body.patient_id || body.patientId;
+    // req.userId is set by authenticateAny to the resolved Patient._id (handles Google OAuth → Patient mapping).
+    // Fall back to body fields only as a last resort.
+    const patientId = req.userId || body.patient_id || body.patientId;
     const conversationHistory = parseMaybeJson(body.conversation_history, []);
     const context = parseMaybeJson(body.context, {});
     const vitals = parseMaybeJson(body.vitals, {});
