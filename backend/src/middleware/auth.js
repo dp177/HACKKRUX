@@ -4,7 +4,7 @@
  */
 
 const jwt = require('jsonwebtoken');
-const { Doctor, Patient } = require('../models');
+const { Doctor, Patient, User } = require('../models');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const JWT_EXPIRY = '7d'; // 7 days
@@ -55,6 +55,62 @@ function extractToken(req) {
   }
   
   return null;
+}
+
+function splitName(name) {
+  const raw = String(name || '').trim();
+  if (!raw) {
+    return { firstName: 'Guest', lastName: 'User' };
+  }
+
+  const parts = raw.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) {
+    return { firstName: parts[0], lastName: 'User' };
+  }
+
+  return {
+    firstName: parts.slice(0, -1).join(' '),
+    lastName: parts[parts.length - 1]
+  };
+}
+
+async function resolvePatientByJwtUserId(userId) {
+  // Primary path: direct patient token where JWT userId is Patient._id.
+  const directPatient = await Patient.findById(userId);
+  if (directPatient) {
+    return directPatient;
+  }
+
+  // Google path: JWT userId may refer to User._id with patient role.
+  const user = await User.findById(userId);
+  if (!user) {
+    return null;
+  }
+
+  const email = String(user.email || '').toLowerCase();
+  if (!email) {
+    return null;
+  }
+
+  let patient = await Patient.findOne({ email });
+  if (patient) {
+    return patient;
+  }
+
+  const { firstName, lastName } = splitName(user.name);
+  patient = await Patient.create({
+    firstName,
+    lastName,
+    dateOfBirth: new Date('1990-01-01T00:00:00.000Z'),
+    gender: 'Prefer not to say',
+    phone: `google-${user.id}`,
+    email,
+    passwordHash: null,
+    consentToTreatment: true,
+    consentToShareData: false
+  });
+
+  return patient;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -129,8 +185,8 @@ async function authenticatePatient(req, res, next) {
       return res.status(403).json({ error: 'Access denied. Patient role required.' });
     }
     
-    // Verify patient exists in database
-    const patient = await Patient.findById(decoded.userId);
+    // Verify patient exists in database; for Google auth tokens, auto-resolve via User profile.
+    const patient = await resolvePatientByJwtUserId(decoded.userId);
     
     if (!patient) {
       return res.status(401).json({ error: 'Patient not found' });
@@ -178,7 +234,7 @@ async function authenticateAny(req, res, next) {
       req.userId = doctor.id;
       req.role = 'doctor';
     } else if (decodedRole === 'patient') {
-      const patient = await Patient.findById(decoded.userId);
+      const patient = await resolvePatientByJwtUserId(decoded.userId);
       if (!patient) {
         return res.status(401).json({ error: 'Patient not found' });
       }
@@ -225,7 +281,7 @@ async function optionalAuth(req, res, next) {
         req.role = 'doctor';
       }
     } else if (decodedRole === 'patient') {
-      const patient = await Patient.findById(decoded.userId);
+      const patient = await resolvePatientByJwtUserId(decoded.userId);
       if (patient) {
         req.patient = patient;
         req.userId = patient.id;

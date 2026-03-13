@@ -14,6 +14,10 @@ const { sendPatientCredentialsEmail } = require('../utils/credentials');
 const SALT_ROUNDS = 10;
 const oauthClient = new OAuth2Client();
 
+function normalizeUserRoleForJwt(role) {
+  return String(role || '').toLowerCase();
+}
+
 // In-memory store for pending mobile OAuth sessions (single-use, expire in 5 min)
 const mobileSessions = new Map();
 
@@ -73,17 +77,17 @@ router.post('/google', async (req, res) => {
         email,
         name,
         profilePicture,
-        role: 'patient'
+        role: 'PATIENT'
       });
     } else {
       user.googleId = googleId;
       user.name = name;
       user.profilePicture = profilePicture;
-      user.role = String(user.role || 'patient').toLowerCase();
+      user.role = String(user.role || 'PATIENT').toUpperCase();
       await user.save();
     }
 
-    const token = generateToken(user.id, user.role);
+    const token = generateToken(user.id, normalizeUserRoleForJwt(user.role));
 
     return res.json({
       token,
@@ -93,7 +97,7 @@ router.post('/google', async (req, res) => {
         email: user.email,
         name: user.name,
         profilePicture: user.profilePicture,
-        role: user.role
+        role: normalizeUserRoleForJwt(user.role)
       }
     });
   } catch (error) {
@@ -128,7 +132,7 @@ router.get('/me', async (req, res) => {
         email: user.email,
         name: user.name,
         profilePicture: user.profilePicture,
-        role: user.role
+        role: normalizeUserRoleForJwt(user.role)
       }
     });
   } catch (error) {
@@ -557,6 +561,10 @@ router.get('/google/mobile', (req, res) => {
   }
 
   const clientId = getAllowedGoogleAudiences()[0];
+  if (!clientId) {
+    return res.status(500).send('GOOGLE_OAUTH_CLIENT_IDS is not configured in backend .env');
+  }
+
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   url.searchParams.set('client_id', clientId);
   url.searchParams.set('redirect_uri', callbackUrl);
@@ -581,6 +589,13 @@ router.get('/google/mobile/callback', async (req, res) => {
   try {
     const clientId = getAllowedGoogleAudiences()[0];
     const callbackUrl = process.env.GOOGLE_MOBILE_CALLBACK_URL;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+    if (!clientId || !callbackUrl || !clientSecret) {
+      const configError = 'Google OAuth backend config missing (GOOGLE_OAUTH_CLIENT_IDS, GOOGLE_MOBILE_CALLBACK_URL, or GOOGLE_CLIENT_SECRET).';
+      if (sessionId) mobileSessions.set(sessionId, { error: configError });
+      return res.send('<html><body style="font-family:sans-serif;padding:32px"><h2>Sign-in failed</h2><p>Backend OAuth config is incomplete. Please contact support.</p></body></html>');
+    }
 
     // Exchange authorization code for tokens
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -589,16 +604,16 @@ router.get('/google/mobile/callback', async (req, res) => {
       body: new URLSearchParams({
         code,
         client_id: clientId,
-        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        client_secret: clientSecret,
         redirect_uri: callbackUrl,
         grant_type: 'authorization_code'
       }).toString()
     });
 
     const tokens = await tokenRes.json();
-    if (tokens.error) {
+    if (!tokenRes.ok || tokens.error) {
       if (sessionId) mobileSessions.set(sessionId, { error: tokens.error_description || tokens.error });
-      return res.send('<html><body style="font-family:sans-serif;padding:32px"><h2>\u274c Sign-in failed</h2><p>You can close this tab and return to the app.</p></body></html>');
+      return res.send('<html><body style="font-family:sans-serif;padding:32px"><h2>Sign-in failed</h2><p>Google token exchange failed. Please return to app and retry.</p></body></html>');
     }
 
     // Get user info with the access token
@@ -615,20 +630,20 @@ router.get('/google/mobile/callback', async (req, res) => {
         email,
         name: userInfo.name,
         profilePicture: userInfo.picture,
-        role: 'patient'
+        role: 'PATIENT'
       });
     } else {
       user.googleId = userInfo.sub;
       user.name = userInfo.name;
       user.profilePicture = userInfo.picture;
-      user.role = String(user.role || 'patient').toLowerCase();
+      user.role = String(user.role || 'PATIENT').toUpperCase();
       await user.save();
     }
 
-    const token = generateToken(user.id, user.role);
+    const token = generateToken(user.id, normalizeUserRoleForJwt(user.role));
     mobileSessions.set(sessionId, {
       token,
-      user: { id: user.id, email: user.email, name: user.name, profilePicture: user.profilePicture, role: user.role }
+      user: { id: user.id, email: user.email, name: user.name, profilePicture: user.profilePicture, role: normalizeUserRoleForJwt(user.role) }
     });
     setTimeout(() => mobileSessions.delete(sessionId), 5 * 60 * 1000);
 
