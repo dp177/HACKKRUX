@@ -126,6 +126,13 @@ export function getDoctorAvailableSlots(doctorId, date) {
     `/available-slots/${normalizedDoctorId}?date=${normalizedDate}`
   ];
 
+  console.log('[MobileAPI] slots_fetch_start', {
+    doctorId: normalizedDoctorId,
+    date: normalizedDate,
+    apiBaseUrl: API_BASE_URL,
+    candidatePaths
+  });
+
   async function tryPath(index, lastError) {
     if (index >= candidatePaths.length) {
       throw lastError || new Error('Unable to fetch slots');
@@ -134,9 +141,21 @@ export function getDoctorAvailableSlots(doctorId, date) {
     const path = candidatePaths[index];
 
     try {
-      return await request(path);
+      const payload = await request(path);
+      const count = (payload?.availableSlots || payload?.slots || []).length;
+      console.log('[MobileAPI] slots_fetch_success', {
+        path,
+        source: 'endpoint',
+        count,
+        hasMessage: Boolean(payload?.message)
+      });
+      return payload;
     } catch (error) {
-      console.log('[MobileAPI] slots_fallback_next', { fromPath: path, nextIndex: index + 1 });
+      console.log('[MobileAPI] slots_fallback_next', {
+        fromPath: path,
+        nextIndex: index + 1,
+        reason: error?.message || 'unknown'
+      });
       return tryPath(index + 1, error);
     }
   }
@@ -249,6 +268,13 @@ export function getDoctorAvailableSlots(doctorId, date) {
       const profile = await request(`/doctors/${normalizedDoctorId}`);
       const fallbackSlots = deriveSlotsFromDoctorProfile(profile, date);
 
+      console.log('[MobileAPI] slots_profile_fallback_result', {
+        doctorId: normalizedDoctorId,
+        date: normalizedDate,
+        availableSlotsKeys: Object.keys(profile?.availableSlots || {}),
+        derivedCount: fallbackSlots.length
+      });
+
       if (fallbackSlots.length) {
         return {
           doctorId,
@@ -279,9 +305,16 @@ export function getDoctorAvailableSlots(doctorId, date) {
       });
 
       try {
-        return await tryLocalFallbacks();
+        const localPayload = await tryLocalFallbacks();
+        const count = (localPayload?.availableSlots || localPayload?.slots || []).length;
+        console.log('[MobileAPI] slots_local_fallback_success', { count });
+        return localPayload;
       } catch {
         const syntheticSlots = generateSyntheticDaySlots(15);
+        console.log('[MobileAPI] slots_synthetic_fallback_used', {
+          count: syntheticSlots.length,
+          reason: 'remote+local slot endpoints unavailable'
+        });
         return {
           doctorId,
           date,

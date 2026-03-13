@@ -17,6 +17,20 @@ function formatSelectedDateLabel(date) {
 export default function SlotSelector({ slots = [], selectedSlot, selectedDate, infoMessage = '', onSelect }) {
   const dayLabel = formatSelectedDateLabel(selectedDate);
 
+  console.log('[SlotSelector] render', {
+    selectedDate,
+    dayLabel,
+    slotsCount: slots.length,
+    selectedSlot,
+    preview: slots.slice(0, 3).map((slot) => ({
+      slotId: slot?.slotId || null,
+      time: slot?.time || slot?.startTime || '',
+      endTime: slot?.endTime || null,
+      available: slot?.available,
+      status: slot?.status || null
+    }))
+  });
+
   return (
     <View style={styles.wrap}>
       <Text style={styles.title}>Select Slot</Text>

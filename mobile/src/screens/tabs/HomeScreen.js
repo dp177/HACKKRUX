@@ -387,6 +387,13 @@ export default function HomeScreen() {
       const loadedSlots = response?.availableSlots || response?.slots || [];
       const availableCount = loadedSlots.filter((slot) => slot?.available).length;
       setSlots(loadedSlots);
+      console.log('[HomeFlow] doctor_slots_response_meta', {
+        source: response?.source || 'endpoint',
+        hasMessage: Boolean(response?.message),
+        total: loadedSlots.length,
+        available: availableCount,
+        firstSlot: loadedSlots[0] || null
+      });
       if (response?.message) {
         setSlotInfoMessage(response.message);
       }
@@ -403,6 +410,7 @@ export default function HomeScreen() {
         setSlotInfoMessage('Slots are visible, but currently all are booked or blocked for this day.');
       }
 
+      console.log('[HomeFlow] route_push_slot', { from: currentRoute, to: 'slot', date, total: loadedSlots.length });
       pushRoute('slot');
     } catch (error) {
       console.log('[HomeFlow] doctor_slots_error', { message: error?.message || 'unknown' });
