@@ -5,11 +5,96 @@
 
 const express = require('express');
 const router = express.Router();
-const { Doctor, Patient, Visit, VitalSignRecord, TriageRecord, Appointment } = require('../models');
+const {
+  Doctor,
+  Patient,
+  Visit,
+  VitalSignRecord,
+  TriageRecord,
+  Appointment,
+  DoctorSchedule,
+  DoctorBreak,
+  DoctorSlot
+} = require('../models');
 const { authenticateDoctor } = require('../middleware/auth');
 const axios = require('axios');
+const { assertWithinNextWeek, generateSlots, overlaps, parseMinutes } = require('../utils/scheduling');
+const { getSocketServer } = require('../utils/socketServer');
 
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001';
+
+function ensureDoctorAccess(req, doctorId) {
+  return String(req.userId) === String(doctorId);
+}
+
+async function emitSlotsUpdate(doctorId, date) {
+  const io = getSocketServer();
+  if (!io) return;
+
+  const slots = await DoctorSlot.find({ doctorId, date }).sort({ startTime: 1 });
+  io.to(`doctor:${doctorId}:slots:${date}`).emit('slot:update', {
+    doctorId,
+    date,
+    slots: slots.map((slot) => ({
+      slotId: slot.id,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      status: slot.status
+    }))
+  });
+}
+
+async function regenerateDoctorSlots({ doctor, date }) {
+  const [schedule, breaks] = await Promise.all([
+    DoctorSchedule.findOne({ doctorId: doctor.id, date }),
+    DoctorBreak.find({ doctorId: doctor.id, date })
+  ]);
+
+  if (!schedule) {
+    return { generated: 0, slots: [] };
+  }
+
+  const generated = generateSlots(schedule, breaks);
+  const bookedSlots = await DoctorSlot.find({ doctorId: doctor.id, date, status: 'BOOKED' });
+  const bookedByStart = new Map(bookedSlots.map((slot) => [slot.startTime, slot]));
+
+  await DoctorSlot.deleteMany({ doctorId: doctor.id, date, status: { $ne: 'BOOKED' } });
+
+  const docsToInsert = [];
+  for (const slot of generated) {
+    if (bookedByStart.has(slot.startTime)) {
+      continue;
+    }
+
+    docsToInsert.push({
+      doctorId: doctor.id,
+      hospitalId: doctor.hospitalId,
+      departmentId: doctor.departmentId,
+      date,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      status: slot.status
+    });
+  }
+
+  if (docsToInsert.length) {
+    try {
+      await DoctorSlot.insertMany(docsToInsert, { ordered: false });
+    } catch (error) {
+      const duplicateOnly = error?.code === 11000
+        || (Array.isArray(error?.writeErrors) && error.writeErrors.every((entry) => entry?.code === 11000));
+      if (!duplicateOnly) {
+        throw error;
+      }
+    }
+  }
+
+  const finalSlots = await DoctorSlot.find({ doctorId: doctor.id, date }).sort({ startTime: 1 });
+  return {
+    generated: docsToInsert.length,
+    slots: finalSlots
+  };
+}
 
 // ══════════════════════════════════════════════════════════════════
 // DOCTOR DASHBOARD - Today's Schedule & Queue
@@ -341,6 +426,531 @@ router.get('/search', async (req, res) => {
   } catch (error) {
     console.error('Error searching doctors:', error);
     res.status(500).json({ error: 'Failed to search doctors' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// CREATE/UPDATE Doctor Schedule (Weekly planning)
+// ═══════════════════════════════════════════════════════════════
+
+router.post('/schedule', authenticateDoctor, async (req, res) => {
+  try {
+    const {
+      doctorId,
+      date,
+      shiftStart,
+      shiftEnd,
+      appointmentStart,
+      appointmentEnd,
+      slotDuration
+    } = req.body;
+
+    if (!doctorId || !date || !shiftStart || !shiftEnd || !appointmentStart || !appointmentEnd || !slotDuration) {
+      return res.status(400).json({ error: 'doctorId, date, shift and appointment window, and slotDuration are required' });
+    }
+
+    assertWithinNextWeek(date);
+
+    const normalizedSlotDuration = Number(slotDuration);
+
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor || !doctor.isActive) {
+      return res.status(404).json({ error: 'Doctor not found or inactive' });
+    }
+
+    const [existingSchedule, existingSlots] = await Promise.all([
+      DoctorSchedule.findOne({ doctorId, date }),
+      DoctorSlot.find({ doctorId, date }).sort({ startTime: 1 })
+    ]);
+
+    const hasSameSchedule = Boolean(existingSchedule
+      && existingSchedule.shiftStart === shiftStart
+      && existingSchedule.shiftEnd === shiftEnd
+      && existingSchedule.appointmentStart === appointmentStart
+      && existingSchedule.appointmentEnd === appointmentEnd
+      && Number(existingSchedule.slotDuration) === normalizedSlotDuration);
+
+    if (hasSameSchedule && existingSlots.length) {
+      return res.status(200).json({
+        message: 'Schedule already exists for this date. Reusing existing generated slots.',
+        schedule: existingSchedule,
+        slots: existingSlots.map((slot) => ({
+          slotId: slot.id,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          status: slot.status
+        }))
+      });
+    }
+
+    const schedule = await DoctorSchedule.findOneAndUpdate(
+      { doctorId, date },
+      {
+        doctorId,
+        date,
+        shiftStart,
+        shiftEnd,
+        appointmentStart,
+        appointmentEnd,
+        slotDuration: normalizedSlotDuration
+      },
+      { upsert: true, new: true }
+    );
+
+    const { slots } = await regenerateDoctorSlots({ doctor, date });
+
+    const io = getSocketServer();
+    if (io) {
+      io.to(`doctor:${doctor.id}:slots:${date}`).emit('slot:update', {
+        doctorId: doctor.id,
+        date,
+        slots: slots.map((slot) => ({
+          slotId: slot.id,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          status: slot.status
+        }))
+      });
+    }
+
+    return res.status(201).json({
+      message: 'Schedule saved and slots generated',
+      schedule,
+      slots: slots.map((slot) => ({
+        slotId: slot.id,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        status: slot.status
+      }))
+    });
+  } catch (error) {
+    console.error('Error setting doctor schedule:', error);
+    return res.status(400).json({ error: error.message || 'Failed to set doctor schedule' });
+  }
+});
+
+router.get('/:doctorId/schedule', authenticateDoctor, async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ error: 'date query parameter is required (YYYY-MM-DD)' });
+    }
+
+    if (!ensureDoctorAccess(req, doctorId)) {
+      return res.status(403).json({ error: 'You can only access your own schedule' });
+    }
+
+    assertWithinNextWeek(date);
+
+    const schedule = await DoctorSchedule.findOne({ doctorId, date });
+    return res.json({ doctorId, date, schedule });
+  } catch (error) {
+    console.error('Error fetching doctor schedule:', error);
+    return res.status(400).json({ error: error.message || 'Failed to fetch doctor schedule' });
+  }
+});
+
+router.delete('/:doctorId/schedule', authenticateDoctor, async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ error: 'date query parameter is required (YYYY-MM-DD)' });
+    }
+
+    if (!ensureDoctorAccess(req, doctorId)) {
+      return res.status(403).json({ error: 'You can only delete your own schedule' });
+    }
+
+    assertWithinNextWeek(date);
+
+    const [bookedCount] = await Promise.all([
+      DoctorSlot.countDocuments({ doctorId, date, status: 'BOOKED' })
+    ]);
+
+    if (bookedCount > 0) {
+      return res.status(400).json({ error: 'Cannot delete schedule with booked slots. Cancel appointments first.' });
+    }
+
+    await Promise.all([
+      DoctorSchedule.deleteOne({ doctorId, date }),
+      DoctorBreak.deleteMany({ doctorId, date }),
+      DoctorSlot.deleteMany({ doctorId, date })
+    ]);
+
+    await emitSlotsUpdate(doctorId, date);
+
+    return res.json({ message: 'Schedule, breaks and slots deleted for selected date' });
+  } catch (error) {
+    console.error('Error deleting doctor schedule:', error);
+    return res.status(400).json({ error: error.message || 'Failed to delete doctor schedule' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ADD Doctor Break and block overlapping slots
+// ═══════════════════════════════════════════════════════════════
+
+router.post('/break', authenticateDoctor, async (req, res) => {
+  try {
+    const { doctorId, date, breakStart, breakEnd } = req.body;
+
+    if (!doctorId || !date || !breakStart || !breakEnd) {
+      return res.status(400).json({ error: 'doctorId, date, breakStart and breakEnd are required' });
+    }
+
+    assertWithinNextWeek(date);
+
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor || !doctor.isActive) {
+      return res.status(404).json({ error: 'Doctor not found or inactive' });
+    }
+
+    if (parseMinutes(breakStart) >= parseMinutes(breakEnd)) {
+      return res.status(400).json({ error: 'breakEnd must be after breakStart' });
+    }
+
+    const createdBreak = await DoctorBreak.create({ doctorId, date, breakStart, breakEnd });
+
+    const slots = await DoctorSlot.find({ doctorId, date, status: { $in: ['AVAILABLE', 'BLOCKED'] } });
+    const breakStartMinutes = parseMinutes(breakStart);
+    const breakEndMinutes = parseMinutes(breakEnd);
+    const overlappedIds = slots
+      .filter((slot) => overlaps(parseMinutes(slot.startTime), parseMinutes(slot.endTime), breakStartMinutes, breakEndMinutes))
+      .map((slot) => slot._id);
+
+    if (overlappedIds.length) {
+      await DoctorSlot.updateMany({ _id: { $in: overlappedIds }, status: 'AVAILABLE' }, { status: 'BLOCKED' });
+    }
+
+    const finalSlots = await DoctorSlot.find({ doctorId, date }).sort({ startTime: 1 });
+    const io = getSocketServer();
+    if (io) {
+      io.to(`doctor:${doctorId}:slots:${date}`).emit('slot:update', {
+        doctorId,
+        date,
+        slots: finalSlots.map((slot) => ({
+          slotId: slot.id,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          status: slot.status
+        }))
+      });
+    }
+
+    return res.status(201).json({
+      message: 'Break added and overlapping slots blocked',
+      break: createdBreak,
+      blockedCount: overlappedIds.length
+    });
+  } catch (error) {
+    console.error('Error creating doctor break:', error);
+    return res.status(400).json({ error: error.message || 'Failed to add doctor break' });
+  }
+});
+
+router.get('/:doctorId/breaks', authenticateDoctor, async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ error: 'date query parameter is required (YYYY-MM-DD)' });
+    }
+
+    if (!ensureDoctorAccess(req, doctorId)) {
+      return res.status(403).json({ error: 'You can only access your own breaks' });
+    }
+
+    assertWithinNextWeek(date);
+
+    const breaks = await DoctorBreak.find({ doctorId, date }).sort({ breakStart: 1 });
+    return res.json({ doctorId, date, breaks });
+  } catch (error) {
+    console.error('Error fetching doctor breaks:', error);
+    return res.status(400).json({ error: error.message || 'Failed to fetch doctor breaks' });
+  }
+});
+
+router.put('/break/:breakId', authenticateDoctor, async (req, res) => {
+  try {
+    const { breakId } = req.params;
+    const { breakStart, breakEnd } = req.body;
+
+    if (!breakStart || !breakEnd) {
+      return res.status(400).json({ error: 'breakStart and breakEnd are required' });
+    }
+
+    if (parseMinutes(breakStart) >= parseMinutes(breakEnd)) {
+      return res.status(400).json({ error: 'breakEnd must be after breakStart' });
+    }
+
+    const existingBreak = await DoctorBreak.findById(breakId);
+    if (!existingBreak) {
+      return res.status(404).json({ error: 'Break not found' });
+    }
+
+    if (!ensureDoctorAccess(req, existingBreak.doctorId)) {
+      return res.status(403).json({ error: 'You can only update your own breaks' });
+    }
+
+    existingBreak.breakStart = breakStart;
+    existingBreak.breakEnd = breakEnd;
+    await existingBreak.save();
+
+    const doctor = await Doctor.findById(existingBreak.doctorId);
+    await regenerateDoctorSlots({ doctor, date: existingBreak.date });
+    await emitSlotsUpdate(String(existingBreak.doctorId), existingBreak.date);
+
+    return res.json({ message: 'Break updated and slots regenerated', break: existingBreak });
+  } catch (error) {
+    console.error('Error updating doctor break:', error);
+    return res.status(400).json({ error: error.message || 'Failed to update doctor break' });
+  }
+});
+
+router.delete('/break/:breakId', authenticateDoctor, async (req, res) => {
+  try {
+    const { breakId } = req.params;
+
+    const existingBreak = await DoctorBreak.findById(breakId);
+    if (!existingBreak) {
+      return res.status(404).json({ error: 'Break not found' });
+    }
+
+    if (!ensureDoctorAccess(req, existingBreak.doctorId)) {
+      return res.status(403).json({ error: 'You can only delete your own breaks' });
+    }
+
+    await DoctorBreak.deleteOne({ _id: breakId });
+
+    const doctor = await Doctor.findById(existingBreak.doctorId);
+    await regenerateDoctorSlots({ doctor, date: existingBreak.date });
+    await emitSlotsUpdate(String(existingBreak.doctorId), existingBreak.date);
+
+    return res.json({ message: 'Break deleted and slots regenerated' });
+  } catch (error) {
+    console.error('Error deleting doctor break:', error);
+    return res.status(400).json({ error: error.message || 'Failed to delete doctor break' });
+  }
+});
+
+router.post('/slot', authenticateDoctor, async (req, res) => {
+  try {
+    const { doctorId, date, startTime, endTime, status = 'AVAILABLE' } = req.body;
+
+    if (!doctorId || !date || !startTime || !endTime) {
+      return res.status(400).json({ error: 'doctorId, date, startTime and endTime are required' });
+    }
+
+    if (!ensureDoctorAccess(req, doctorId)) {
+      return res.status(403).json({ error: 'You can only add your own slots' });
+    }
+
+    assertWithinNextWeek(date);
+
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor || !doctor.isActive) {
+      return res.status(404).json({ error: 'Doctor not found or inactive' });
+    }
+
+    const schedule = await DoctorSchedule.findOne({ doctorId, date });
+    if (!schedule) {
+      return res.status(400).json({ error: 'Create schedule before adding custom slots' });
+    }
+
+    const slotStart = parseMinutes(startTime);
+    const slotEnd = parseMinutes(endTime);
+    if (slotStart >= slotEnd) {
+      return res.status(400).json({ error: 'endTime must be after startTime' });
+    }
+
+    const appointmentStart = parseMinutes(schedule.appointmentStart);
+    const appointmentEnd = parseMinutes(schedule.appointmentEnd);
+    if (slotStart < appointmentStart || slotEnd > appointmentEnd) {
+      return res.status(400).json({ error: 'Custom slot must be within appointment window' });
+    }
+
+    const breaks = await DoctorBreak.find({ doctorId, date });
+    const hasBreakOverlap = breaks.some((entry) => overlaps(slotStart, slotEnd, parseMinutes(entry.breakStart), parseMinutes(entry.breakEnd)));
+    if (hasBreakOverlap) {
+      return res.status(400).json({ error: 'Custom slot overlaps with a break' });
+    }
+
+    const existingSlots = await DoctorSlot.find({ doctorId, date });
+    const hasSlotOverlap = existingSlots.some((slot) => overlaps(slotStart, slotEnd, parseMinutes(slot.startTime), parseMinutes(slot.endTime)));
+    if (hasSlotOverlap) {
+      return res.status(400).json({ error: 'Custom slot overlaps with an existing slot' });
+    }
+
+    const createdSlot = await DoctorSlot.create({
+      doctorId,
+      hospitalId: doctor.hospitalId,
+      departmentId: doctor.departmentId,
+      date,
+      startTime,
+      endTime,
+      status
+    });
+
+    await emitSlotsUpdate(doctorId, date);
+
+    return res.status(201).json({
+      message: 'Custom slot added',
+      slot: {
+        slotId: createdSlot.id,
+        startTime: createdSlot.startTime,
+        endTime: createdSlot.endTime,
+        status: createdSlot.status
+      }
+    });
+  } catch (error) {
+    console.error('Error adding custom doctor slot:', error);
+    return res.status(400).json({ error: error.message || 'Failed to add custom doctor slot' });
+  }
+});
+
+router.put('/slot/:slotId', authenticateDoctor, async (req, res) => {
+  try {
+    const { slotId } = req.params;
+    const { startTime, endTime, status } = req.body;
+
+    const slot = await DoctorSlot.findById(slotId);
+    if (!slot) {
+      return res.status(404).json({ error: 'Slot not found' });
+    }
+
+    if (!ensureDoctorAccess(req, slot.doctorId)) {
+      return res.status(403).json({ error: 'You can only update your own slots' });
+    }
+
+    if (slot.status === 'BOOKED' && (startTime || endTime)) {
+      return res.status(400).json({ error: 'Cannot change time for booked slots' });
+    }
+
+    const nextStart = startTime || slot.startTime;
+    const nextEnd = endTime || slot.endTime;
+    const nextStatus = status || slot.status;
+
+    const startMinutes = parseMinutes(nextStart);
+    const endMinutes = parseMinutes(nextEnd);
+    if (startMinutes >= endMinutes) {
+      return res.status(400).json({ error: 'endTime must be after startTime' });
+    }
+
+    const schedule = await DoctorSchedule.findOne({ doctorId: slot.doctorId, date: slot.date });
+    if (schedule) {
+      const windowStart = parseMinutes(schedule.appointmentStart);
+      const windowEnd = parseMinutes(schedule.appointmentEnd);
+      if (startMinutes < windowStart || endMinutes > windowEnd) {
+        return res.status(400).json({ error: 'Slot must be within appointment window' });
+      }
+    }
+
+    const breaks = await DoctorBreak.find({ doctorId: slot.doctorId, date: slot.date });
+    const overlapsBreak = breaks.some((entry) => overlaps(startMinutes, endMinutes, parseMinutes(entry.breakStart), parseMinutes(entry.breakEnd)));
+    if (overlapsBreak) {
+      return res.status(400).json({ error: 'Slot overlaps with a break' });
+    }
+
+    const siblingSlots = await DoctorSlot.find({ doctorId: slot.doctorId, date: slot.date, _id: { $ne: slot._id } });
+    const overlapsSlot = siblingSlots.some((entry) => overlaps(startMinutes, endMinutes, parseMinutes(entry.startTime), parseMinutes(entry.endTime)));
+    if (overlapsSlot) {
+      return res.status(400).json({ error: 'Slot overlaps with another slot' });
+    }
+
+    slot.startTime = nextStart;
+    slot.endTime = nextEnd;
+    slot.status = nextStatus;
+    await slot.save();
+
+    await emitSlotsUpdate(String(slot.doctorId), slot.date);
+
+    return res.json({
+      message: 'Slot updated',
+      slot: {
+        slotId: slot.id,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        status: slot.status
+      }
+    });
+  } catch (error) {
+    console.error('Error updating doctor slot:', error);
+    return res.status(400).json({ error: error.message || 'Failed to update doctor slot' });
+  }
+});
+
+router.delete('/slot/:slotId', authenticateDoctor, async (req, res) => {
+  try {
+    const { slotId } = req.params;
+
+    const slot = await DoctorSlot.findById(slotId);
+    if (!slot) {
+      return res.status(404).json({ error: 'Slot not found' });
+    }
+
+    if (!ensureDoctorAccess(req, slot.doctorId)) {
+      return res.status(403).json({ error: 'You can only delete your own slots' });
+    }
+
+    if (slot.status === 'BOOKED') {
+      return res.status(400).json({ error: 'Cannot delete booked slot' });
+    }
+
+    await DoctorSlot.deleteOne({ _id: slotId });
+    await emitSlotsUpdate(String(slot.doctorId), slot.date);
+
+    return res.json({ message: 'Slot deleted' });
+  } catch (error) {
+    console.error('Error deleting doctor slot:', error);
+    return res.status(400).json({ error: error.message || 'Failed to delete doctor slot' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// GET Doctor Slots (patient + portal)
+// ═══════════════════════════════════════════════════════════════
+
+router.get('/:doctorId/slots', async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ error: 'date query parameter is required (YYYY-MM-DD)' });
+    }
+
+    assertWithinNextWeek(date);
+
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor || !doctor.isActive) {
+      return res.status(404).json({ error: 'Doctor not found or inactive' });
+    }
+
+    let slots = await DoctorSlot.find({ doctorId, date }).sort({ startTime: 1 });
+    if (!slots.length) {
+      await regenerateDoctorSlots({ doctor, date });
+      slots = await DoctorSlot.find({ doctorId, date }).sort({ startTime: 1 });
+    }
+
+    return res.json({
+      doctorId,
+      date,
+      slots: slots.map((slot) => ({
+        slotId: slot.id,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        status: slot.status,
+        available: slot.status === 'AVAILABLE'
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching doctor slots:', error);
+    return res.status(400).json({ error: error.message || 'Failed to fetch doctor slots' });
   }
 });
 

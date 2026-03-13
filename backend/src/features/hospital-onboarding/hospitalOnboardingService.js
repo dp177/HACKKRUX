@@ -3,6 +3,7 @@ const Hospital = require('../../models/Hospital');
 const HospitalOnboardingRequest = require('./hospitalOnboardingRequestModel');
 const HospitalStaff = require('../hospital-portal/hospitalStaffModel');
 const { generateTempPassword } = require('../../utils/credentials');
+const { generateHospitalQrDataUrl } = require('../../utils/hospitalQr');
 const {
   sendHospitalCredentialsEmail,
   sendHospitalOnboardingRejectionEmail
@@ -97,8 +98,13 @@ async function approveOnboardingRequest(requestId, payload = {}) {
     city: request.city,
     state: request.state,
     phone: request.phone,
+    email: request.contactEmail,
     isActive: true
   });
+
+  const qrCodeDataUrl = await generateHospitalQrDataUrl(hospital.id);
+  hospital.qrCodeUrl = qrCodeDataUrl;
+  await hospital.save();
 
   const temporaryPassword = generateTempPassword(12);
   const passwordHash = await bcrypt.hash(temporaryPassword, SALT_ROUNDS);

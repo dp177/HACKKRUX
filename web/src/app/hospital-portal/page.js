@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { FiEye, FiEyeOff } from 'react-icons/fi';
 import {
   getDepartmentsByHospital,
+  getHospitalQrDownloadUrl,
   hospitalPortalCreateDepartment,
   hospitalPortalCreateDoctor,
   hospitalPortalGetDoctors,
@@ -205,6 +206,47 @@ export default function HospitalPortalPage() {
     toast.success('Logged out');
   }
 
+  function handleDownloadQr() {
+    if (!hospital?.id) return;
+    const url = getHospitalQrDownloadUrl(hospital.id);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  function handlePrintQrPoster() {
+    if (!hospital?.qrCodeUrl) return;
+
+    const printWindow = window.open('', '_blank', 'width=700,height=900');
+    if (!printWindow) return;
+
+    const html = `
+      <!doctype html>
+      <html>
+      <head>
+        <title>${hospital.name} QR Poster</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 0; padding: 40px; text-align: center; }
+          .title { font-size: 28px; font-weight: 700; margin-bottom: 14px; }
+          .subtitle { font-size: 16px; color: #475569; margin-bottom: 24px; }
+          .qr { width: 320px; height: 320px; margin: 0 auto 20px auto; border: 1px solid #d1d5db; padding: 14px; border-radius: 16px; }
+          .hint { font-size: 15px; color: #0f766e; }
+        </style>
+      </head>
+      <body>
+        <div class="title">${hospital.name}</div>
+        <div class="subtitle">Scan this code at the hospital entrance to join the triage queue.</div>
+        <img class="qr" src="${hospital.qrCodeUrl}" alt="Hospital QR" />
+        <div class="hint">Entrance | Reception | Waiting Area</div>
+      </body>
+      </html>
+    `;
+
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => printWindow.print(), 350);
+  }
+
   if (!isAuthenticated) {
     return (
       <main className="container">
@@ -276,6 +318,29 @@ export default function HospitalPortalPage() {
         </div>
         {status && <p className="mt-4 text-sm font-medium text-emerald-700">{status}</p>}
         {error && <p className="mt-4 text-sm font-medium text-red-700">{error}</p>}
+      </section>
+
+      <section className="card">
+        <h2 className="text-xl font-semibold text-slate-900">Hospital QR Code</h2>
+        <p className="mt-1 text-sm text-slate-500">Scan this code at the hospital entrance to join the queue.</p>
+
+        <div className="mt-5 flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            {hospital?.qrCodeUrl ? (
+              <img src={hospital.qrCodeUrl} alt="Hospital QR" className="h-56 w-56 rounded-xl object-contain" />
+            ) : (
+              <div className="flex h-56 w-56 items-center justify-center rounded-xl bg-slate-50 text-sm text-slate-500">
+                QR not generated yet
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <button type="button" onClick={handleDownloadQr} disabled={!hospital?.id}>Download QR</button>
+            <button type="button" className="secondary" onClick={handlePrintQrPoster} disabled={!hospital?.qrCodeUrl}>Print QR Poster</button>
+            <p className="text-xs text-slate-500">Recommended placement: entrance, reception desk, waiting area.</p>
+          </div>
+        </div>
       </section>
 
       <section className="grid gap-6 lg:grid-cols-2">

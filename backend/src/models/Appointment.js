@@ -17,6 +17,18 @@ const appointmentSchema = new mongoose.Schema({
     ref: 'Doctor',
     required: true
   },
+  slotId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DoctorSlot',
+    default: null,
+    index: true
+  },
+  hospitalId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Hospital',
+    default: null,
+    index: true
+  },
   departmentId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Department',
@@ -27,6 +39,11 @@ const appointmentSchema = new mongoose.Schema({
   scheduledDate: {
     type: Date,
     required: true
+  },
+  appointmentDate: {
+    type: String,
+    default: null,
+    comment: 'YYYY-MM-DD convenience date field'
   },
   scheduledTime: {
     type: String,
@@ -93,6 +110,7 @@ const appointmentSchema = new mongoose.Schema({
 // Indexes
 appointmentSchema.index({ patientId: 1 });
 appointmentSchema.index({ doctorId: 1 });
+appointmentSchema.index({ slotId: 1 });
 appointmentSchema.index({ scheduledDate: 1, scheduledTime: 1 });
 appointmentSchema.index({ status: 1 });
 

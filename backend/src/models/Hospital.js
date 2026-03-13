@@ -29,6 +29,16 @@ const hospitalSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  email: {
+    type: String,
+    default: null,
+    lowercase: true,
+    trim: true
+  },
+  qrCodeUrl: {
+    type: String,
+    default: null
+  },
   isActive: {
     type: Boolean,
     default: true

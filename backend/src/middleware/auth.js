@@ -80,7 +80,7 @@ async function authenticateDoctor(req, res, next) {
     }
     
     // Verify doctor exists in database
-    const doctor = await Doctor.findByPk(decoded.userId);
+    const doctor = await Doctor.findById(decoded.userId);
     
     if (!doctor) {
       return res.status(401).json({ error: 'Doctor not found' });
@@ -126,7 +126,7 @@ async function authenticatePatient(req, res, next) {
     }
     
     // Verify patient exists in database
-    const patient = await Patient.findByPk(decoded.userId);
+    const patient = await Patient.findById(decoded.userId);
     
     if (!patient) {
       return res.status(401).json({ error: 'Patient not found' });
@@ -164,7 +164,7 @@ async function authenticateAny(req, res, next) {
     }
     
     if (decoded.role === 'doctor') {
-      const doctor = await Doctor.findByPk(decoded.userId);
+      const doctor = await Doctor.findById(decoded.userId);
       if (!doctor || !doctor.isActive) {
         return res.status(401).json({ error: 'Doctor not found or inactive' });
       }
@@ -172,7 +172,7 @@ async function authenticateAny(req, res, next) {
       req.userId = doctor.id;
       req.role = 'doctor';
     } else if (decoded.role === 'patient') {
-      const patient = await Patient.findByPk(decoded.userId);
+      const patient = await Patient.findById(decoded.userId);
       if (!patient) {
         return res.status(401).json({ error: 'Patient not found' });
       }
@@ -210,14 +210,14 @@ async function optionalAuth(req, res, next) {
     }
     
     if (decoded.role === 'doctor') {
-      const doctor = await Doctor.findByPk(decoded.userId);
+      const doctor = await Doctor.findById(decoded.userId);
       if (doctor && doctor.isActive) {
         req.doctor = doctor;
         req.userId = doctor.id;
         req.role = 'doctor';
       }
     } else if (decoded.role === 'patient') {
-      const patient = await Patient.findByPk(decoded.userId);
+      const patient = await Patient.findById(decoded.userId);
       if (patient) {
         req.patient = patient;
         req.userId = patient.id;

@@ -22,6 +22,9 @@ const TriageRecord = require('./TriageRecord');
 const Visit = require('./Visit');
 const VitalSignRecord = require('./VitalSignRecord');
 const Queue = require('./Queue');
+const DoctorSchedule = require('./DoctorSchedule');
+const DoctorBreak = require('./DoctorBreak');
+const DoctorSlot = require('./DoctorSlot');
 const User = require('./User');
 const WhatsAppConversation = require('./WhatsAppConversation');
 const HospitalOnboardingRequest = require('../features/hospital-onboarding/hospitalOnboardingRequestModel');
@@ -81,6 +84,9 @@ module.exports = {
   Visit,
   VitalSignRecord,
   Queue,
+  DoctorSchedule,
+  DoctorBreak,
+  DoctorSlot,
   User,
   WhatsAppConversation,
   HospitalOnboardingRequest,

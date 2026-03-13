@@ -4,6 +4,7 @@ const Department = require('../../models/Department');
 const Hospital = require('../../models/Hospital');
 const HospitalStaff = require('./hospitalStaffModel');
 const { generateToken, verifyToken } = require('../../middleware/auth');
+const { ensureHospitalQrCode } = require('../../utils/hospitalQr');
 const { sendDoctorCredentialsEmail } = require('../../shared/services/emailService');
 const { generateTempPassword } = require('../../utils/credentials');
 
@@ -29,6 +30,8 @@ async function loginHospitalStaff(email, password) {
     throw new Error('Hospital account is inactive');
   }
 
+  await ensureHospitalQrCode(hospital);
+
   staff.lastLoginAt = new Date();
   await staff.save();
 
@@ -46,7 +49,10 @@ async function loginHospitalStaff(email, password) {
     hospital: {
       id: hospital.id,
       name: hospital.name,
-      code: hospital.code
+      code: hospital.code,
+      city: hospital.city,
+      address: hospital.address,
+      qrCodeUrl: hospital.qrCodeUrl
     }
   };
 }

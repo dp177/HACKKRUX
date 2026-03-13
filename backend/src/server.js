@@ -8,12 +8,36 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { Server } = require('socket.io');
 const { connectDatabase, isConnected } = require('./models');
+const { setSocketServer } = require('./utils/socketServer');
 
 const app = express();
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000', 'http://localhost:3001'],
+    credentials: true
+  }
+});
+
+setSocketServer(io);
+
+io.on('connection', (socket) => {
+  socket.on('doctor:slots:subscribe', ({ doctorId, date }) => {
+    if (!doctorId || !date) return;
+    socket.join(`doctor:${doctorId}:slots:${date}`);
+  });
+
+  socket.on('doctor:slots:unsubscribe', ({ doctorId, date }) => {
+    if (!doctorId || !date) return;
+    socket.leave(`doctor:${doctorId}:slots:${date}`);
+  });
+});
 const PORT = process.env.PORT || 5000;
 
 // ═══════════════════════════════════════════════════════════════
@@ -28,11 +52,11 @@ app.use(cors({
 }));
 
 // Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
-});
-app.use('/api/', limiter);
+// const limiter = rateLimit({
+//   windowMs: 15 * 60 * 1000, // 15 minutes
+//   max: 100 // limit each IP to 100 requests per windowMs
+// });
+// app.use('/api/', limiter);
 
 // Body parsing
 app.use(express.json());
@@ -133,7 +157,7 @@ async function startServer() {
     }
     
     // Start server
-    const server = app.listen(PORT, () => {
+    const server = httpServer.listen(PORT, () => {
       console.log('');
       console.log('═══════════════════════════════════════════════════════════');
       console.log('  🏥 TRIAGE BACKEND API - RUNNING');

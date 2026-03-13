@@ -135,7 +135,7 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", @"
     Write-Host '  Press a for Android / w for Web in Expo terminal' -ForegroundColor Cyan;
     Write-Host '===============================================================' -ForegroundColor Cyan;
     Write-Host '';
-    npm start
+    npx expo start -c
 "@
 
 Write-Host "[OK] Expo app starting in new window..." -ForegroundColor Green

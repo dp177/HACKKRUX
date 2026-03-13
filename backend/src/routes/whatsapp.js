@@ -458,10 +458,9 @@ router.post('/whatsapp-booking', async (req, res) => {
       const doctors = await Doctor.find({
         departmentId: department.id,
         hospitalId: conversation.collectedData.hospitalId,
-        isActive: true,
-        isAvailableToday: true
+        isActive: true
       })
-        .sort({ firstName: 1, lastName: 1 })
+        .sort({ isAvailableToday: -1, firstName: 1, lastName: 1 })
         .limit(9);
 
       if (!doctors.length) {
@@ -476,7 +475,8 @@ router.post('/whatsapp-booking', async (req, res) => {
       const optionDoctors = doctors.map((d) => ({
         id: String(d._id),
         name: `Dr. ${d.firstName} ${d.lastName}`,
-        specialty: d.specialty
+        specialty: d.specialty,
+        isAvailableToday: d.isAvailableToday !== false
       }));
 
       setCollected(conversation, 'departmentId', department.id);
@@ -488,10 +488,11 @@ router.post('/whatsapp-booking', async (req, res) => {
         sender: maskPhone(senderId),
         departmentId: department.id,
         departmentName: department.name,
-        doctorCount: optionDoctors.length
+        doctorCount: optionDoctors.length,
+        availableTodayCount: optionDoctors.filter((d) => d.isAvailableToday).length
       });
 
-      const lines = optionDoctors.map((d, i) => `${i + 1}. ${d.name} (${d.specialty})`);
+      const lines = optionDoctors.map((d, i) => `${i + 1}. ${d.name} (${d.specialty})${d.isAvailableToday ? '' : ' - not marked available today'}`);
       return sendAssistant(conversation, res, `Selected: ${department.name}\nChoose doctor:\n${lines.join('\n')}`);
     }
 

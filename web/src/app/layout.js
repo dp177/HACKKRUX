@@ -15,7 +15,7 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={primaryFont.variable}>
+      <body className={primaryFont.variable} suppressHydrationWarning>
         {children}
         <AppToaster />
       </body>

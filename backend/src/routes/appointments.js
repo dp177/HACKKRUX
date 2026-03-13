@@ -5,8 +5,10 @@
 
 const express = require('express');
 const router = express.Router();
-const { Appointment, Doctor, Patient, Department } = require('../models');
+const { Appointment, Doctor, Patient, Department, DoctorSchedule, DoctorBreak, DoctorSlot } = require('../models');
 const { authenticatePatient, authenticateDoctor, authenticateAny } = require('../middleware/auth');
+const { assertWithinNextWeek, generateSlots } = require('../utils/scheduling');
+const { getSocketServer } = require('../utils/socketServer');
 
 // ═══════════════════════════════════════════════════════════════
 // BOOK APPOINTMENT (Patient)
@@ -16,6 +18,7 @@ router.post('/book', authenticatePatient, async (req, res) => {
   try {
     const {
       doctorId,
+      slotId,
       scheduledDate,
       scheduledTime,
       chiefComplaint,
@@ -23,8 +26,8 @@ router.post('/book', authenticatePatient, async (req, res) => {
     } = req.body;
     
     // Validation
-    if (!doctorId || !scheduledDate || !scheduledTime) {
-      return res.status(400).json({ error: 'Doctor, date, and time required' });
+    if (!doctorId || (!slotId && (!scheduledDate || !scheduledTime))) {
+      return res.status(400).json({ error: 'doctorId and slotId are required, or provide scheduledDate with scheduledTime' });
     }
     
     const patientId = req.patient.id;
@@ -35,38 +38,86 @@ router.post('/book', authenticatePatient, async (req, res) => {
       return res.status(404).json({ error: 'Doctor not found or inactive' });
     }
     
-    // Check if slot is available (no conflicting appointments)
-    const conflictingAppointment = await Appointment.findOne({
-      doctorId,
-      scheduledDate,
-      scheduledTime,
-      status: {
-        $nin: ['cancelled', 'completed', 'no-show']
+    let resolvedScheduledDate = scheduledDate;
+    let resolvedScheduledTime = scheduledTime;
+    let resolvedDuration = doctor.consultationDuration;
+    let resolvedSlotId = null;
+
+    if (slotId) {
+      const lockedSlot = await DoctorSlot.findOneAndUpdate(
+        {
+          _id: slotId,
+          doctorId,
+          status: 'AVAILABLE'
+        },
+        {
+          status: 'BOOKED'
+        },
+        { new: true }
+      );
+
+      if (!lockedSlot) {
+        return res.status(409).json({ error: 'Slot already booked or unavailable' });
       }
-    });
-    
-    if (conflictingAppointment) {
-      return res.status(409).json({ error: 'This time slot is already booked' });
+
+      resolvedSlotId = lockedSlot.id;
+      resolvedScheduledDate = lockedSlot.date;
+      resolvedScheduledTime = lockedSlot.startTime;
+
+      const [sh, sm] = String(lockedSlot.startTime).split(':').map(Number);
+      const [eh, em] = String(lockedSlot.endTime).split(':').map(Number);
+      resolvedDuration = ((eh * 60) + em) - ((sh * 60) + sm);
+    } else {
+      // Fallback legacy protection when slotId is not provided
+      const conflictingAppointment = await Appointment.findOne({
+        doctorId,
+        scheduledDate,
+        scheduledTime,
+        status: {
+          $nin: ['cancelled', 'completed', 'no-show']
+        }
+      });
+
+      if (conflictingAppointment) {
+        return res.status(409).json({ error: 'This time slot is already booked' });
+      }
     }
     
     // Create appointment
     const appointment = new Appointment({
       patientId,
       doctorId,
+      slotId: resolvedSlotId,
+      hospitalId: doctor.hospitalId,
       departmentId: doctor.departmentId,
-      scheduledDate,
-      scheduledTime,
-      duration: doctor.consultationDuration,
+      scheduledDate: resolvedScheduledDate,
+      appointmentDate: String(resolvedScheduledDate).slice(0, 10),
+      scheduledTime: resolvedScheduledTime,
+      duration: resolvedDuration,
       chiefComplaint: chiefComplaint || 'General consultation',
       appointmentType,
       status: 'scheduled'
     });
     await appointment.save();
+
+    const slotEventDate = String(resolvedScheduledDate).slice(0, 10);
+    const io = getSocketServer();
+    if (io && resolvedSlotId) {
+      const payload = {
+        slotId: resolvedSlotId,
+        doctorId,
+        date: slotEventDate,
+        status: 'BOOKED'
+      };
+      io.to(`doctor:${doctorId}:slots:${slotEventDate}`).emit('slot:update', payload);
+      io.emit('slot:update', payload);
+    }
     
     res.status(201).json({
       message: 'Appointment booked successfully',
       appointment: {
         id: appointment._id,
+        slotId: appointment.slotId,
         doctorName: `Dr. ${doctor.firstName} ${doctor.lastName}`,
         specialty: doctor.specialty,
         scheduledDate: appointment.scheduledDate,
@@ -100,9 +151,63 @@ router.get('/available-slots/:doctorId', async (req, res) => {
     if (!doctor) {
       return res.status(404).json({ error: 'Doctor not found' });
     }
+
+    try {
+      assertWithinNextWeek(date);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    // Prefer generated slot model when a schedule exists.
+    const [schedule, breaks, persistedSlots] = await Promise.all([
+      DoctorSchedule.findOne({ doctorId, date }),
+      DoctorBreak.find({ doctorId, date }),
+      DoctorSlot.find({ doctorId, date }).sort({ startTime: 1 })
+    ]);
+
+    if (schedule) {
+      let slots = persistedSlots;
+
+      if (!slots.length) {
+        const generated = generateSlots(schedule, breaks).map((slot) => ({
+          doctorId,
+          hospitalId: doctor.hospitalId,
+          departmentId: doctor.departmentId,
+          date,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          status: slot.status
+        }));
+
+        if (generated.length) {
+          await DoctorSlot.insertMany(generated);
+        }
+
+        slots = await DoctorSlot.find({ doctorId, date }).sort({ startTime: 1 });
+      }
+
+      return res.json({
+        date,
+        doctorId,
+        doctorName: `Dr. ${doctor.firstName} ${doctor.lastName}`,
+        specialty: doctor.specialty,
+        consultationDuration: Number(schedule.slotDuration),
+        availableSlots: slots.map((slot) => ({
+          slotId: slot.id,
+          time: slot.startTime,
+          endTime: slot.endTime,
+          status: slot.status,
+          available: slot.status === 'AVAILABLE'
+        }))
+      });
+    }
     
-    // Get day of week from date
-    const dayOfWeek = new Date(date).toLocaleDateString('en-US', { weekday: 'lowercase' });
+    // Get normalized weekday key used in doctor.availableSlots (monday, tuesday, ...)
+    const parsedDate = new Date(date);
+    if (Number.isNaN(parsedDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' });
+    }
+    const dayOfWeek = parsedDate.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
     
     // Get doctor's available slots for this day
     const daySchedule = doctor.availableSlots?.[dayOfWeek];
@@ -125,7 +230,7 @@ router.get('/available-slots/:doctorId', async (req, res) => {
       }
     }).select('scheduledTime duration');
     
-    const bookedTimes = bookedAppointments.map(apt => apt.scheduledTime);
+    const bookedTimes = bookedAppointments.map((apt) => apt.scheduledTime);
     
     // Generate time slots from startTime to endTime
     const startTime = daySchedule.startTime; // e.g., "09:00"

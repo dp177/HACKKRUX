@@ -1,5 +1,9 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:5000/api';
 
+export function getHospitalQrDownloadUrl(hospitalId) {
+  return `${API_BASE_URL}/hospitals/${encodeURIComponent(hospitalId)}/qr`;
+}
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
@@ -33,6 +37,83 @@ export async function doctorLogin(email, password) {
 
 export async function getDoctorDashboard(doctorId, token) {
   return request(`/doctors/${doctorId}/dashboard`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export async function setDoctorSchedule(payload, token) {
+  return request('/doctors/schedule', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getDoctorScheduleForDate(doctorId, date, token) {
+  return request(`/doctors/${encodeURIComponent(doctorId)}/schedule?date=${encodeURIComponent(date)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export async function deleteDoctorScheduleForDate(doctorId, date, token) {
+  return request(`/doctors/${encodeURIComponent(doctorId)}/schedule?date=${encodeURIComponent(date)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export async function addDoctorBreak(payload, token) {
+  return request('/doctors/break', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getDoctorBreaksForDate(doctorId, date, token) {
+  return request(`/doctors/${encodeURIComponent(doctorId)}/breaks?date=${encodeURIComponent(date)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export async function updateDoctorBreak(breakId, payload, token) {
+  return request(`/doctors/break/${encodeURIComponent(breakId)}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function deleteDoctorBreak(breakId, token) {
+  return request(`/doctors/break/${encodeURIComponent(breakId)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export async function getDoctorSlotsForDate(doctorId, date) {
+  return request(`/doctors/${encodeURIComponent(doctorId)}/slots?date=${encodeURIComponent(date)}`);
+}
+
+export async function addDoctorSlot(payload, token) {
+  return request('/doctors/slot', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function updateDoctorSlot(slotId, payload, token) {
+  return request(`/doctors/slot/${encodeURIComponent(slotId)}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function deleteDoctorSlot(slotId, token) {
+  return request(`/doctors/slot/${encodeURIComponent(slotId)}`, {
+    method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` }
   });
 }

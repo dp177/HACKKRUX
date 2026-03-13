@@ -4,10 +4,21 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import {
+  addDoctorSlot,
+  addDoctorBreak,
   callNextPatient,
+  deleteDoctorBreak,
+  deleteDoctorScheduleForDate,
+  deleteDoctorSlot,
   getDoctorDashboard,
+  getDoctorBreaksForDate,
   getDoctorProfile,
-  getPatientPreview
+  getDoctorScheduleForDate,
+  getDoctorSlotsForDate,
+  getPatientPreview,
+  setDoctorSchedule,
+  updateDoctorBreak,
+  updateDoctorSlot
 } from '../../lib/api';
 
 const NAV_ITEMS = [
@@ -63,6 +74,23 @@ function queueRowFromRaw(item, index) {
   };
 }
 
+function formatDateWithDay(date) {
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return {
+      day: 'Day',
+      shortDate: date,
+      full: date
+    };
+  }
+
+  return {
+    day: parsed.toLocaleDateString('en-US', { weekday: 'short' }),
+    shortDate: parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    full: parsed.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })
+  };
+}
+
 export default function DoctorPortalPage() {
   const router = useRouter();
   const [activeNav, setActiveNav] = useState('Dashboard');
@@ -76,6 +104,28 @@ export default function DoctorPortalPage() {
   const [selectedPatientPreview, setSelectedPatientPreview] = useState(null);
 
   const [availability, setAvailability] = useState(DEFAULT_AVAILABILITY);
+  const [availabilityDate, setAvailabilityDate] = useState(new Date().toISOString().slice(0, 10));
+  const [scheduleForm, setScheduleForm] = useState({
+    shiftStart: '09:00',
+    shiftEnd: '17:00',
+    appointmentStart: '10:00',
+    appointmentEnd: '13:00',
+    slotDuration: '20'
+  });
+  const [breakForm, setBreakForm] = useState({
+    breakStart: '11:00',
+    breakEnd: '11:20'
+  });
+  const [slotForm, setSlotForm] = useState({
+    startTime: '10:00',
+    endTime: '10:20',
+    status: 'AVAILABLE'
+  });
+  const [editingBreakId, setEditingBreakId] = useState('');
+  const [editingSlotId, setEditingSlotId] = useState('');
+  const [availabilitySchedule, setAvailabilitySchedule] = useState(null);
+  const [availabilityBreaks, setAvailabilityBreaks] = useState([]);
+  const [availabilitySlots, setAvailabilitySlots] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [appointmentNotes, setAppointmentNotes] = useState({});
   const [appointmentsState, setAppointmentsState] = useState({});
@@ -148,6 +198,48 @@ export default function DoctorPortalPage() {
 
     return () => clearInterval(timer);
   }, [token, doctor?.id]);
+
+  useEffect(() => {
+    refreshAvailabilityData({ silent: true });
+  }, [doctor?.id, token, availabilityDate]);
+
+  async function refreshAvailabilityData({ silent = false } = {}) {
+    if (!doctor?.id || !availabilityDate) return;
+
+    try {
+      const [scheduleData, breaksData, slotsData] = await Promise.all([
+        getDoctorScheduleForDate(doctor.id, availabilityDate, token),
+        getDoctorBreaksForDate(doctor.id, availabilityDate, token),
+        getDoctorSlotsForDate(doctor.id, availabilityDate)
+      ]);
+
+      const loadedSchedule = scheduleData?.schedule || null;
+      setAvailabilitySchedule(loadedSchedule);
+      if (loadedSchedule) {
+        setScheduleForm({
+          shiftStart: loadedSchedule.shiftStart || '09:00',
+          shiftEnd: loadedSchedule.shiftEnd || '17:00',
+          appointmentStart: loadedSchedule.appointmentStart || '10:00',
+          appointmentEnd: loadedSchedule.appointmentEnd || '13:00',
+          slotDuration: String(loadedSchedule.slotDuration || 20)
+        });
+      }
+
+      setAvailabilityBreaks(breaksData?.breaks || []);
+      setAvailabilitySlots(slotsData?.slots || []);
+
+      if (!silent) {
+        toast.success('Availability data refreshed');
+      }
+    } catch (error) {
+      setAvailabilitySchedule(null);
+      setAvailabilityBreaks([]);
+      setAvailabilitySlots([]);
+      if (!silent) {
+        toast.error(error.message || 'Failed to load availability data');
+      }
+    }
+  }
 
   async function loadPortalData(silent) {
     if (!silent) setLoading(true);
@@ -417,40 +509,365 @@ export default function DoctorPortalPage() {
   }
 
   function renderAvailability() {
+      const today = new Date();
+      const dateOptions = Array.from({ length: 7 }).map((_, idx) => {
+        const d = new Date(today);
+        d.setDate(today.getDate() + idx);
+        return d.toISOString().slice(0, 10);
+      });
+
+      const daywiseOptions = dateOptions.map((date) => ({
+        value: date,
+        ...formatDateWithDay(date)
+      }));
+
+      const selectedDate = availabilityDate || dateOptions[0];
+      const selectedDateMeta = formatDateWithDay(selectedDate);
+
     return (
       <section className="card space-y-4">
-        <h2 className="text-xl font-semibold text-slate-900">Availability</h2>
-        <p className="text-sm text-slate-600">Control weekly schedule for triage routing. If backend schedule APIs are unavailable, this state is saved in-browser for demo.</p>
-        <div className="space-y-3">
-          {availability.map((item) => (
-            <div key={item.day} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <p className="font-semibold text-slate-800">{item.day}</p>
-                <div className="flex gap-2">
-                  <button type="button" className="secondary" onClick={() => toggleAvailability(item.day)}>
-                    {item.available ? 'Set Off' : 'Set Available'}
+          <h2 className="text-xl font-semibold text-slate-900">Availability Scheduler</h2>
+          <p className="text-sm text-slate-600">Define shift, appointment window, slot duration, and breaks. Slots auto-generate and update in real time.</p>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Daywise View (Next 7 Days)</p>
+            <div className="flex flex-wrap gap-2">
+              {daywiseOptions.map((option) => {
+                const active = option.value === selectedDate;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={active ? '' : 'secondary'}
+                    onClick={() => setAvailabilityDate(option.value)}
+                  >
+                    {option.day} {option.shortDate}
                   </button>
-                  <button type="button" onClick={() => toggleEmergency(item.day)}>
-                    {item.emergency ? 'Emergency On' : 'Emergency Off'}
-                  </button>
-                </div>
-              </div>
-              {item.available ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-slate-600">Start</label>
-                    <input type="time" value={item.start} onChange={(event) => updateHours(item.day, 'start', event.target.value)} />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-slate-600">End</label>
-                    <input type="time" value={item.end} onChange={(event) => updateHours(item.day, 'end', event.target.value)} />
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-slate-500">Off day</p>
-              )}
+                );
+              })}
             </div>
-          ))}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="mb-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Date (next 7 days)</label>
+                <select value={availabilityDate} onChange={(event) => setAvailabilityDate(event.target.value)}>
+                  {daywiseOptions.map((date) => (
+                    <option key={date.value} value={date.value}>{date.day} {date.shortDate}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Shift Start</label>
+                <input type="time" value={scheduleForm.shiftStart} onChange={(e) => setScheduleForm((p) => ({ ...p, shiftStart: e.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Shift End</label>
+                <input type="time" value={scheduleForm.shiftEnd} onChange={(e) => setScheduleForm((p) => ({ ...p, shiftEnd: e.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Slot Duration (min)</label>
+                <input type="number" min="5" max="180" value={scheduleForm.slotDuration} onChange={(e) => setScheduleForm((p) => ({ ...p, slotDuration: e.target.value }))} />
+              </div>
+            </div>
+
+            <div className="mb-3 grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Appointment Start</label>
+                <input type="time" value={scheduleForm.appointmentStart} onChange={(e) => setScheduleForm((p) => ({ ...p, appointmentStart: e.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Appointment End</label>
+                <input type="time" value={scheduleForm.appointmentEnd} onChange={(e) => setScheduleForm((p) => ({ ...p, appointmentEnd: e.target.value }))} />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!doctor?.id || !token) return;
+                  try {
+                    const response = await setDoctorSchedule({
+                      doctorId: doctor.id,
+                      date: availabilityDate,
+                      shiftStart: scheduleForm.shiftStart,
+                      shiftEnd: scheduleForm.shiftEnd,
+                      appointmentStart: scheduleForm.appointmentStart,
+                      appointmentEnd: scheduleForm.appointmentEnd,
+                      slotDuration: Number(scheduleForm.slotDuration)
+                    }, token);
+                    toast.success(response?.message || 'Schedule saved');
+                    await refreshAvailabilityData({ silent: true });
+                  } catch (error) {
+                    toast.error(error.message || 'Failed to save schedule');
+                  }
+                }}
+              >
+                Save Schedule
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={async () => {
+                  if (!doctor?.id || !token) return;
+                  try {
+                    await deleteDoctorScheduleForDate(doctor.id, availabilityDate, token);
+                    toast.success('Schedule deleted for selected day');
+                    await refreshAvailabilityData({ silent: true });
+                  } catch (error) {
+                    toast.error(error.message || 'Failed to delete schedule');
+                  }
+                }}
+              >
+                Delete Schedule
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={async () => {
+                  await refreshAvailabilityData();
+                }}
+              >
+                Refresh Day Data
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Break Controls</h3>
+            <p className="mb-3 mt-1 text-sm text-slate-600">Slider-style break concept: define break range within appointment window.</p>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Break Start</label>
+                <input type="time" value={breakForm.breakStart} onChange={(e) => setBreakForm((p) => ({ ...p, breakStart: e.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Break End</label>
+                <input type="time" value={breakForm.breakEnd} onChange={(e) => setBreakForm((p) => ({ ...p, breakEnd: e.target.value }))} />
+              </div>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  className="w-full"
+                  onClick={async () => {
+                    if (!doctor?.id || !token) return;
+                    try {
+                      if (editingBreakId) {
+                        await updateDoctorBreak(editingBreakId, {
+                          breakStart: breakForm.breakStart,
+                          breakEnd: breakForm.breakEnd
+                        }, token);
+                        toast.success('Break updated');
+                        setEditingBreakId('');
+                      } else {
+                        await addDoctorBreak({
+                          doctorId: doctor.id,
+                          date: availabilityDate,
+                          breakStart: breakForm.breakStart,
+                          breakEnd: breakForm.breakEnd
+                        }, token);
+                        toast.success('Break added and slots blocked');
+                      }
+                      await refreshAvailabilityData({ silent: true });
+                    } catch (error) {
+                      toast.error(error.message || 'Failed to save break');
+                    }
+                  }}
+                >
+                  {editingBreakId ? 'Update Break' : 'Add Break'}
+                </button>
+              </div>
+            </div>
+
+            {editingBreakId ? (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setEditingBreakId('');
+                    setBreakForm({ breakStart: '11:00', breakEnd: '11:20' });
+                  }}
+                >
+                  Cancel Break Edit
+                </button>
+              </div>
+            ) : null}
+
+            <div className="mt-4 space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Existing Breaks</p>
+              {!availabilityBreaks.length && <p className="text-sm text-slate-500">No breaks added for selected day.</p>}
+              {!!availabilityBreaks.length && availabilityBreaks.map((item) => (
+                <div key={item._id || item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-sm font-semibold text-slate-800">{item.breakStart} - {item.breakEnd}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => {
+                        setEditingBreakId(item._id || item.id);
+                        setBreakForm({ breakStart: item.breakStart, breakEnd: item.breakEnd });
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={async () => {
+                        try {
+                          await deleteDoctorBreak(item._id || item.id, token);
+                          toast.success('Break deleted');
+                          await refreshAvailabilityData({ silent: true });
+                        } catch (error) {
+                          toast.error(error.message || 'Failed to delete break');
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline Concept</p>
+              <div className="mt-2 h-5 w-full rounded-full bg-emerald-100">
+                <div className="h-5 rounded-full bg-emerald-500" style={{ width: '70%' }} />
+              </div>
+              <p className="mt-1 text-xs text-slate-500">Green bar: appointment window. Add breaks to carve blocked segments.</p>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Generated Slots</h3>
+            <p className="mb-3 text-sm text-slate-600">Viewing slots for {selectedDateMeta.full}</p>
+
+            <div className="mb-3 grid gap-3 sm:grid-cols-4">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Custom Slot Start</label>
+                <input type="time" value={slotForm.startTime} onChange={(e) => setSlotForm((prev) => ({ ...prev, startTime: e.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Custom Slot End</label>
+                <input type="time" value={slotForm.endTime} onChange={(e) => setSlotForm((prev) => ({ ...prev, endTime: e.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Status</label>
+                <select value={slotForm.status} onChange={(e) => setSlotForm((prev) => ({ ...prev, status: e.target.value }))}>
+                  <option value="AVAILABLE">AVAILABLE</option>
+                  <option value="BLOCKED">BLOCKED</option>
+                  <option value="BOOKED">BOOKED</option>
+                </select>
+              </div>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  className="w-full"
+                  onClick={async () => {
+                    if (!doctor?.id || !token) return;
+                    try {
+                      if (editingSlotId) {
+                        await updateDoctorSlot(editingSlotId, {
+                          startTime: slotForm.startTime,
+                          endTime: slotForm.endTime,
+                          status: slotForm.status
+                        }, token);
+                        toast.success('Slot updated');
+                        setEditingSlotId('');
+                      } else {
+                        await addDoctorSlot({
+                          doctorId: doctor.id,
+                          date: availabilityDate,
+                          startTime: slotForm.startTime,
+                          endTime: slotForm.endTime,
+                          status: slotForm.status
+                        }, token);
+                        toast.success('Custom slot added');
+                      }
+                      await refreshAvailabilityData({ silent: true });
+                    } catch (error) {
+                      toast.error(error.message || 'Failed to save slot');
+                    }
+                  }}
+                >
+                  {editingSlotId ? 'Update Slot' : 'Add Slot'}
+                </button>
+              </div>
+            </div>
+
+            {editingSlotId ? (
+              <div className="mb-3">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setEditingSlotId('');
+                    setSlotForm({ startTime: '10:00', endTime: '10:20', status: 'AVAILABLE' });
+                  }}
+                >
+                  Cancel Slot Edit
+                </button>
+              </div>
+            ) : null}
+
+            {availabilitySchedule ? (
+              <p className="mb-3 text-xs text-slate-500">
+                Active schedule: Shift {availabilitySchedule.shiftStart}-{availabilitySchedule.shiftEnd}, Window {availabilitySchedule.appointmentStart}-{availabilitySchedule.appointmentEnd}, Duration {availabilitySchedule.slotDuration} min
+              </p>
+            ) : (
+              <p className="mb-3 text-xs text-slate-500">No schedule found for selected date.</p>
+            )}
+
+            {!availabilitySlots.length && <p className="text-sm text-slate-500">No slots generated yet for selected date.</p>}
+            {!!availabilitySlots.length && (
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {availabilitySlots.map((slot) => (
+                  <div key={slot.slotId} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
+                    <p className="text-xs text-slate-500">{selectedDateMeta.day} {selectedDateMeta.shortDate}</p>
+                    <p className="font-semibold text-slate-800">{slot.startTime} - {slot.endTime}</p>
+                    <p className={`mt-1 text-xs font-semibold ${slot.status === 'AVAILABLE' ? 'text-emerald-700' : slot.status === 'BOOKED' ? 'text-amber-700' : 'text-slate-600'}`}>
+                      {slot.status}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => {
+                          setEditingSlotId(slot.slotId);
+                          setSlotForm({
+                            startTime: slot.startTime,
+                            endTime: slot.endTime,
+                            status: slot.status || 'AVAILABLE'
+                          });
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={async () => {
+                          try {
+                            await deleteDoctorSlot(slot.slotId, token);
+                            toast.success('Slot deleted');
+                            await refreshAvailabilityData({ silent: true });
+                          } catch (error) {
+                            toast.error(error.message || 'Failed to delete slot');
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+            )}
         </div>
       </section>
     );
