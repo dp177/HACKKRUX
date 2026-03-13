@@ -126,7 +126,24 @@ function buildDailySlots(startHour, endHour, durationMinutes, bookedTimes) {
 }
 
 async function ensurePatientByPhone(senderPhone) {
-  return Patient.findOne({ phone: senderPhone });
+  const digits = String(senderPhone || '').replace(/\D/g, '');
+  const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+
+  const candidates = [String(senderPhone || '').trim(), digits, `+${digits}`].filter(Boolean);
+
+  let patient = await Patient.findOne({ phone: { $in: candidates } }).sort({ updatedAt: -1 });
+  if (patient) {
+    return { patient, matchType: 'exact_or_candidate' };
+  }
+
+  if (last10.length === 10) {
+    patient = await Patient.findOne({ phone: { $regex: `${last10}$` } }).sort({ updatedAt: -1 });
+    if (patient) {
+      return { patient, matchType: 'last10_suffix' };
+    }
+  }
+
+  return { patient: null, matchType: 'not_found' };
 }
 
 function splitName(fullName) {
@@ -505,13 +522,15 @@ router.post('/whatsapp-booking', async (req, res) => {
   try {
     const shouldRestart = isRestartCommand(command);
 
-    const existingPatient = await traceStage('resolve_patient_by_phone', () => ensurePatientByPhone(senderId));
+    const patientResolution = await traceStage('resolve_patient_by_phone', () => ensurePatientByPhone(senderId));
+    const existingPatient = patientResolution?.patient || null;
 
     logEvent('info', 'patient_resolved', {
       traceId,
       sender: maskPhone(senderId),
       patientId: existingPatient ? String(existingPatient._id) : null,
       exists: Boolean(existingPatient),
+      matchType: patientResolution?.matchType || 'unknown',
       shouldRestart
     });
 
@@ -990,6 +1009,36 @@ router.post('/whatsapp-booking', async (req, res) => {
       stack: error?.stack || null
     });
     return res.type('text/xml').send(twimlMessage('Sorry, we hit a server error. Please reply START and try again.'));
+  }
+});
+
+router.post('/whatsapp-booking/status', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const messageSid = payload.MessageSid || payload.SmsSid || null;
+    const status = payload.MessageStatus || payload.SmsStatus || payload.EventType || 'unknown';
+    const errorCode = payload.ErrorCode || null;
+    const errorMessage = payload.ErrorMessage || payload.ChannelStatusMessage || null;
+    const to = normalizePhone(payload.To || '');
+    const from = normalizePhone(payload.From || '');
+
+    logEvent(errorCode ? 'warn' : 'info', 'twilio_delivery_status', {
+      messageSid,
+      status,
+      errorCode,
+      errorMessage,
+      to: maskPhone(to),
+      from: maskPhone(from),
+      rawKeys: Object.keys(payload)
+    });
+
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    logEvent('error', 'twilio_delivery_status_handler_failed', {
+      message: error?.message || 'unknown error',
+      stack: error?.stack || null
+    });
+    return res.status(200).json({ ok: false });
   }
 });
 
