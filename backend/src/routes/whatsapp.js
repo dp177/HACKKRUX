@@ -122,22 +122,64 @@ function buildDailySlots(startHour, endHour, durationMinutes, bookedTimes) {
 }
 
 async function ensurePatientByPhone(senderPhone) {
+  return Patient.findOne({ phone: senderPhone });
+}
+
+function splitName(fullName) {
+  const cleaned = String(fullName || '').trim().replace(/\s+/g, ' ');
+  if (!cleaned) return { firstName: '', lastName: '' };
+  const parts = cleaned.split(' ');
+  const firstName = parts[0];
+  const lastName = parts.slice(1).join(' ') || 'Patient';
+  return { firstName, lastName };
+}
+
+async function resolveUniquePhoneEmail(phoneDigits) {
+  const base = `${phoneDigits}@gmai.com`;
+  const existing = await Patient.findOne({ email: base });
+  if (!existing) return base;
+
+  for (let i = 1; i <= 25; i++) {
+    const candidate = `${phoneDigits}_${i}@gmai.com`;
+    const taken = await Patient.findOne({ email: candidate });
+    if (!taken) return candidate;
+  }
+
+  return `${phoneDigits}_${Date.now()}@gmai.com`;
+}
+
+async function upsertPatientFromWhatsAppName(senderPhone, fullName) {
+  const phoneDigits = senderPhone.replace(/[^0-9]/g, '') || 'unknown';
+  const { firstName, lastName } = splitName(fullName);
+
+  if (!firstName) {
+    throw new Error('name_required');
+  }
+
   let patient = await Patient.findOne({ phone: senderPhone });
-  if (patient) return patient;
+  const emailForPhone = await resolveUniquePhoneEmail(phoneDigits);
 
-  const safePhone = senderPhone.replace(/[^0-9]/g, '') || 'unknown';
-  const email = `wa_${safePhone}@jeeva.local`;
+  if (!patient) {
+    patient = await Patient.create({
+      firstName,
+      lastName,
+      dateOfBirth: new Date('1990-01-01'),
+      gender: 'Prefer not to say',
+      phone: senderPhone,
+      email: emailForPhone,
+      preferredLanguage: 'English'
+    });
+    return patient;
+  }
 
-  patient = await Patient.create({
-    firstName: 'WhatsApp',
-    lastName: safePhone.slice(-4) || 'User',
-    dateOfBirth: new Date('1990-01-01'),
-    gender: 'Prefer not to say',
-    phone: senderPhone,
-    email,
-    preferredLanguage: 'English'
-  });
+  patient.firstName = firstName;
+  patient.lastName = lastName;
 
+  if (!patient.email || patient.email.includes('@jeeva.local')) {
+    patient.email = emailForPhone;
+  }
+
+  await patient.save();
   return patient;
 }
 
@@ -279,16 +321,38 @@ async function sendAssistant(conversation, res, message) {
     status: conversation.status,
     textPreview: String(message || '').slice(0, 120)
   });
-  appendMessage(conversation, 'assistant', message);
-  await conversation.save();
-  logEvent('info', 'conversation_saved', {
+
+  // Twilio expects a quick webhook response; send first, then persist in background.
+  const xml = twimlMessage(message);
+  res.type('text/xml').send(xml);
+
+  logEvent('info', 'twiml_response_sent', {
     conversationId: String(conversation._id || ''),
     sender: maskPhone(conversation.senderId),
-    step: conversation.step,
-    status: conversation.status,
-    messageCount: (conversation.messages || []).length
+    bytes: Buffer.byteLength(xml)
   });
-  return res.type('text/xml').send(twimlMessage(message));
+
+  appendMessage(conversation, 'assistant', message);
+  conversation
+    .save()
+    .then(() => {
+      logEvent('info', 'conversation_saved', {
+        conversationId: String(conversation._id || ''),
+        sender: maskPhone(conversation.senderId),
+        step: conversation.step,
+        status: conversation.status,
+        messageCount: (conversation.messages || []).length
+      });
+    })
+    .catch((saveError) => {
+      logEvent('error', 'conversation_save_failed', {
+        conversationId: String(conversation._id || ''),
+        sender: maskPhone(conversation.senderId),
+        message: saveError?.message || 'unknown error'
+      });
+    });
+
+  return;
 }
 
 async function expireActiveConversation(senderId) {
@@ -335,12 +399,14 @@ router.post('/whatsapp-booking', async (req, res) => {
   }
 
   try {
-    const patient = await ensurePatientByPhone(senderId);
     const shouldRestart = isRestartCommand(command);
+
+    const existingPatient = await ensurePatientByPhone(senderId);
 
     logEvent('info', 'patient_resolved', {
       sender: maskPhone(senderId),
-      patientId: String(patient._id),
+      patientId: existingPatient ? String(existingPatient._id) : null,
+      exists: Boolean(existingPatient),
       shouldRestart
     });
 
@@ -357,26 +423,13 @@ router.post('/whatsapp-booking', async (req, res) => {
     if (!conversation || shouldRestart) {
       await expireActiveConversation(senderId);
 
-      const hospitals = await Hospital.find({ isActive: true }).sort({ name: 1 }).limit(9);
-      if (!hospitals.length) {
-        logEvent('warn', 'no_active_hospitals', { sender: maskPhone(senderId) });
-        return res.type('text/xml').send(twimlMessage('No active hospitals are available right now. Please try again later.'));
-      }
-
-      logEvent('info', 'hospitals_loaded', {
-        sender: maskPhone(senderId),
-        count: hospitals.length
-      });
-
-      const optionHospitals = hospitals.map((h) => ({ id: String(h._id), name: h.name }));
-
       conversation = new WhatsAppConversation({
         senderId,
-        patientId: patient._id,
+        patientId: existingPatient?._id,
         status: 'active',
-        step: 'choose_hospital',
+        step: 'collect_name',
         collectedData: {},
-        options: { hospitals: optionHospitals },
+        options: {},
         aiPendingQuestions: [],
         messages: []
       });
@@ -391,11 +444,10 @@ router.post('/whatsapp-booking', async (req, res) => {
         step: conversation.step
       });
 
-      const lines = optionHospitals.map((h, i) => `${i + 1}. ${h.name}`);
       return sendAssistant(
         conversation,
         res,
-        `Namaste! Welcome to Jeeva.\nReply with number to choose hospital:\n${lines.join('\n')}\n\n(Reply START anytime to restart)`
+        'Namaste! Welcome to Jeeva.\nPlease reply with your full name to continue booking.\n\n(Reply START or MENU anytime to restart)'
       );
     }
 
@@ -456,6 +508,38 @@ router.post('/whatsapp-booking', async (req, res) => {
 
       const lines = optionDepartments.map((d, i) => `${i + 1}. ${d.name}`);
       return sendAssistant(conversation, res, `Selected: ${hospital.name}\nChoose department:\n${lines.join('\n')}`);
+    }
+
+    if (step === 'collect_name') {
+      if (!userMsg || userMsg.length < 2) {
+        return sendAssistant(conversation, res, 'Please reply with your full name to continue.');
+      }
+
+      const patient = await upsertPatientFromWhatsAppName(senderId, userMsg);
+      conversation.patientId = patient._id;
+      setCollected(conversation, 'patientName', `${patient.firstName} ${patient.lastName}`.trim());
+
+      const hospitals = await Hospital.find({ isActive: true }).sort({ name: 1 }).limit(9);
+      if (!hospitals.length) {
+        logEvent('warn', 'no_active_hospitals', { sender: maskPhone(senderId) });
+        return sendAssistant(conversation, res, 'No active hospitals are available right now. Please try again later.');
+      }
+
+      logEvent('info', 'hospitals_loaded', {
+        sender: maskPhone(senderId),
+        count: hospitals.length
+      });
+
+      const optionHospitals = hospitals.map((h) => ({ id: String(h._id), name: h.name }));
+      conversation.step = 'choose_hospital';
+      setOption(conversation, 'hospitals', optionHospitals);
+
+      const lines = optionHospitals.map((h, i) => `${i + 1}. ${h.name}`);
+      return sendAssistant(
+        conversation,
+        res,
+        `Thanks ${patient.firstName}.\nReply with number to choose hospital:\n${lines.join('\n')}\n\n(Reply START or MENU anytime to restart)`
+      );
     }
 
     if (step === 'choose_department') {
@@ -634,9 +718,10 @@ router.post('/whatsapp-booking', async (req, res) => {
 
     if (step === 'ask_duration') {
       setCollected(conversation, 'duration', userMsg);
+      const patientProfile = conversation.patientId ? await Patient.findById(conversation.patientId).select('preferredLanguage') : null;
       const aiQuestions = await generateNextQuestions(
         conversation.messages,
-        patient.preferredLanguage || 'English'
+        patientProfile?.preferredLanguage || 'English'
       );
       conversation.aiPendingQuestions = aiQuestions;
       conversation.markModified('aiPendingQuestions');
