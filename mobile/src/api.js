@@ -406,3 +406,133 @@ export function logoutAuth(token) {
     headers: { Authorization: `Bearer ${token}` }
   });
 }
+
+// ── Triage AI ──────────────────────────────────────────────────────────────
+
+/**
+ * Step 1 of the chat loop.
+ * Send the conversation history so far; receive the next 1-2 questions from AI.
+ *
+ * @param {Array<{role: 'user'|'assistant', content: string}>} conversationHistory
+ * @param {string} token
+ * @returns {Promise<{ questions: string[] }>}
+ */
+export function triageChatNext(conversationHistory, token) {
+  return request('/triage/chat-next', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ conversation_history: conversationHistory })
+  });
+}
+
+/**
+ * Final analysis step. Sends the full conversation + patient context to the
+ * multi-agent triage AI. Optionally attaches a medical record file.
+ *
+ * payload shape:
+ * {
+ *   patient_id: string,
+ *   conversation_history: [{role, content}],
+ *   available_departments: string[],        // e.g. ['Cardiology', 'Neurology']
+ *   context: {
+ *     is_conscious: boolean,
+ *     breathing_difficulty: 'normal'|'mild'|'severe',
+ *     age: number,
+ *     comorbidities: string[],
+ *     recent_trauma_or_surgery: boolean
+ *   },
+ *   vitals?: {
+ *     heart_rate: number,
+ *     blood_pressure: string,               // '120/80'
+ *     temperature: number,
+ *     o2_sat: number,
+ *     respiratory_rate: number
+ *   }
+ * }
+ *
+ * file (optional): { uri, name, type } from expo-image-picker / document picker
+ *
+ * @returns {Promise<{
+ *   patient_id: string,
+ *   risk_score: number,
+ *   urgency_level: string,
+ *   department: string,
+ *   explainability_summary: string,
+ *   historical_summary: string,
+ *   ai_analysis: {
+ *     chief_complaint: string,
+ *     extracted_symptoms: string[],
+ *     detected_red_flags: string[],
+ *     severity: string,
+ *     symptom_category: string,
+ *     onset_type: string,
+ *     department: string,
+ *     extracted_comorbidities: string[]
+ *   },
+ *   queue?: { position: number, estimatedWaitMinutes: number }
+ * }>}
+ */
+export async function triageAnalyze(payload, token, file = null) {
+  const API_URL = `${API_BASE_URL}/triage/analyze`;
+
+  if (file) {
+    // multipart/form-data: backend expects { payload (stringified JSON), file }
+    const formData = new FormData();
+    formData.append('payload', JSON.stringify(payload));
+    formData.append('file', {
+      uri: file.uri,
+      name: file.name || 'medical_record',
+      type: file.type || 'application/octet-stream'
+    });
+
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData
+    });
+
+    let data = null;
+    try { data = await response.json(); } catch { data = null; }
+
+    if (!response.ok) {
+      throw new Error(data?.error || `Triage analyze failed: ${response.status}`);
+    }
+    return data;
+  }
+
+  // JSON path (no file)
+  return request('/triage/analyze', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+}
+
+/**
+ * Re-score a batch of waiting patients (used internally / by queue screens).
+ * Each patient: { patient_id, risk_score, urgency_level, wait_time_minutes }
+ *
+ * @param {Array<{patient_id:string, risk_score:number, urgency_level:string, wait_time_minutes:number}>} patients
+ * @param {string} token
+ * @returns {Promise<{ results: Array<{patient_id:string, risk_score:number, urgency_level:string, message:string}> }>}
+ */
+export function triageRescoreBatch(patients, token) {
+  return request('/triage/rescore-batch', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ patients })
+  });
+}
+
+/**
+ * Get current queue position and estimated wait for a patient.
+ *
+ * @param {string} patientId
+ * @param {string} token
+ * @returns {Promise<{ position: number, estimatedWaitMinutes: number, priority: string }>}
+ */
+export function getPatientQueueStatus(patientId, token) {
+  return request(`/triage/queue/patient/${encodeURIComponent(patientId)}/status`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}

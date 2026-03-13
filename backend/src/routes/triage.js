@@ -6,10 +6,202 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const { TriageRecord, Patient, Doctor } = require('../models');
+const multer = require('multer');
+const { TriageRecord, Patient, Doctor, Department } = require('../models');
 const { authenticateAny, authenticateDoctor } = require('../middleware/auth');
+const { getNextQuestions, analyzeTriage, rescoreBatch, TRIAGE_AI_URL } = require('../services/triageService');
 
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001';
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+
+function parseMaybeJson(value, fallback = null) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return fallback;
+  }
+}
+
+function riskToPriority(urgencyLevel, riskScore) {
+  const urgency = String(urgencyLevel || '').toUpperCase();
+  if (urgency === 'CRITICAL') return 'CRITICAL';
+  if (urgency === 'HIGH') return 'HIGH';
+  if (urgency === 'MODERATE' || urgency === 'MEDIUM') return 'MODERATE';
+  if (urgency === 'LOW') return 'LOW';
+
+  const score = Number(riskScore || 0);
+  if (score >= 90) return 'CRITICAL';
+  if (score >= 75) return 'HIGH';
+  if (score >= 50) return 'MODERATE';
+  if (score >= 25) return 'LOW';
+  return 'ROUTINE';
+}
+
+async function resolveDepartmentId(departmentInput) {
+  if (!departmentInput) return null;
+
+  const asId = String(departmentInput);
+  const byId = await Department.findById(asId).select('_id');
+  if (byId?._id) return byId._id;
+
+  const byName = await Department.findOne({ name: new RegExp(`^${asId}$`, 'i') }).select('_id');
+  return byName?._id || null;
+}
+
+// New AI chat endpoint for mobile conversation flow.
+router.post('/chat-next', authenticateAny, async (req, res) => {
+  try {
+    const conversationHistory = parseMaybeJson(req.body?.conversation_history, []);
+    const result = await getNextQuestions(conversationHistory);
+    return res.json(result);
+  } catch (error) {
+    console.error('chat-next error:', error.response?.data || error.message);
+    return res.status(500).json({
+      error: 'Failed to fetch next triage questions',
+      details: error.response?.data || error.message
+    });
+  }
+});
+
+// New AI final analyze endpoint for mobile submit.
+router.post('/analyze', authenticateAny, upload.single('file'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const patientId = body.patient_id || body.patientId;
+    const conversationHistory = parseMaybeJson(body.conversation_history, []);
+    const context = parseMaybeJson(body.context, {});
+    const vitals = parseMaybeJson(body.vitals, {});
+    const availableDepartments = parseMaybeJson(body.available_departments, []);
+    const chiefComplaint = body.chief_complaint || context?.chiefComplaint || 'General consultation';
+
+    if (!patientId) {
+      return res.status(400).json({ error: 'patient_id is required' });
+    }
+
+    const patient = await Patient.findById(patientId).select('_id firstName lastName');
+    if (!patient) {
+      return res.status(404).json({ error: 'Patient not found' });
+    }
+
+    const payload = {
+      patient_id: patientId,
+      conversation_history: conversationHistory,
+      available_departments: Array.isArray(availableDepartments) ? availableDepartments : [],
+      context: context || {},
+      vitals: vitals || {}
+    };
+
+    const ai = await analyzeTriage(payload, req.file || null);
+
+    const departmentName = ai.department || ai.recommended_department || null;
+    const departmentId = await resolveDepartmentId(departmentName);
+
+    const queueCount = await TriageRecord.countDocuments({
+      departmentId: departmentId || null,
+      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+      queuePosition: { $ne: null }
+    });
+
+    const riskScore = Number(ai.risk_score ?? ai.riskScore ?? 0);
+    const priorityLevel = riskToPriority(ai.urgency_level || ai.urgencyLevel, riskScore);
+
+    const triageRecord = await TriageRecord.create({
+      patientId,
+      departmentId: departmentId || null,
+      chiefComplaint,
+      symptomCategory: ai.symptom_category || null,
+      criticalScore: null,
+      symptomScore: null,
+      contextScore: null,
+      vitalScore: null,
+      timelineScore: null,
+      totalRiskScore: riskScore,
+      priorityLevel,
+      estimatedWaitMinutes: Number(ai.estimated_wait_minutes ?? ai.estimatedWaitMinutes ?? 0),
+      redFlags: Array.isArray(ai.red_flags) ? ai.red_flags : [],
+      vitalSigns: vitals || {},
+      recommendedSpecialty: departmentName,
+      triageNotes: ai.explainability_summary || ai.summary || null,
+      queuePosition: queueCount + 1
+    });
+
+    return res.json({
+      triage: {
+        id: triageRecord._id,
+        risk_score: triageRecord.totalRiskScore,
+        urgency_level: triageRecord.priorityLevel,
+        department: triageRecord.recommendedSpecialty,
+        explainability_summary: triageRecord.triageNotes,
+        red_flags: triageRecord.redFlags
+      },
+      queue: {
+        queuePosition: triageRecord.queuePosition,
+        estimatedWaitMinutes: triageRecord.estimatedWaitMinutes
+      },
+      aiRaw: ai
+    });
+  } catch (error) {
+    console.error('triage analyze error:', error.response?.data || error.message);
+    return res.status(500).json({
+      error: 'Failed to analyze triage',
+      details: error.response?.data || error.message
+    });
+  }
+});
+
+// Manual queue rescoring endpoint (scheduler uses same AI API).
+router.post('/rescore-batch', authenticateDoctor, async (req, res) => {
+  try {
+    const providedPatients = parseMaybeJson(req.body?.patients, null);
+
+    const patients = Array.isArray(providedPatients)
+      ? providedPatients
+      : (await TriageRecord.find({ queuePosition: { $ne: null } })
+          .sort({ createdAt: 1 })
+          .limit(100)
+          .select('_id patientId totalRiskScore priorityLevel chiefComplaint createdAt'))
+          .map((row) => ({
+            triage_id: String(row._id),
+            patient_id: String(row.patientId),
+            risk_score: Number(row.totalRiskScore || 0),
+            waiting_minutes: Math.max(0, Math.floor((Date.now() - new Date(row.createdAt).getTime()) / 60000)),
+            priority_level: row.priorityLevel,
+            chief_complaint: row.chiefComplaint
+          }));
+
+    const result = await rescoreBatch(patients);
+    const updates = Array.isArray(result?.results) ? result.results : [];
+
+    let updated = 0;
+    for (const row of updates) {
+      const triageId = row?.triage_id || row?.triageId;
+      const newScore = Number(row?.risk_score ?? row?.new_risk_score ?? row?.updated_risk_score);
+      if (!triageId || Number.isNaN(newScore)) continue;
+
+      await TriageRecord.findByIdAndUpdate(triageId, {
+        totalRiskScore: newScore,
+        priorityLevel: riskToPriority(row?.urgency_level, newScore)
+      });
+      updated += 1;
+    }
+
+    return res.json({
+      message: 'Rescore complete',
+      aiUrl: TRIAGE_AI_URL,
+      scanned: patients.length,
+      updated,
+      result
+    });
+  } catch (error) {
+    console.error('triage rescore-batch error:', error.response?.data || error.message);
+    return res.status(500).json({
+      error: 'Failed to rescore queue',
+      details: error.response?.data || error.message
+    });
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════
 // INITIATE TRIAGE SESSION

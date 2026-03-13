@@ -98,6 +98,68 @@ export async function submitHospitalOnboardingRequest(payload) {
   });
 }
 
+// ── Triage AI ──────────────────────────────────────────────────────────────
+
+/**
+ * Ask the AI for the next triage question(s) given a conversation history.
+ * @param {Array<{role:string,content:string}>} conversationHistory
+ * @param {string} token
+ */
+export async function triageChatNext(conversationHistory, token) {
+  return request('/triage/chat-next', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ conversation_history: conversationHistory })
+  });
+}
+
+/**
+ * Submit triage data for AI analysis and get a risk score + queue position.
+ * @param {object} payload  { patientId, symptoms, conversation_history, ... }
+ * @param {string} token
+ */
+export async function triageAnalyze(payload, token) {
+  return request('/triage/analyze', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+}
+
+/**
+ * Trigger AI rescoring for a batch of active patients (doctor/admin only).
+ * @param {Array<object>} patients  Array of patient triage data
+ * @param {string} token
+ */
+export async function triageRescoreBatch(patients, token) {
+  return request('/triage/rescore-batch', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ patients })
+  });
+}
+
+/**
+ * Get the full clinic queue (doctor view).
+ * @param {string} token
+ */
+export async function getClinicQueue(token) {
+  return request('/triage/queue/clinic', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+/**
+ * Get current queue position and status for a patient.
+ * @param {string} patientId
+ * @param {string} token
+ */
+export async function getPatientQueueStatus(patientId, token) {
+  return request(`/triage/queue/patient/${encodeURIComponent(patientId)}/status`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export async function getAdminOnboardingRequests(status, adminKey) {
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
   return request(`/admin/onboarding/requests${query}`, {

@@ -15,6 +15,7 @@ const rateLimit = require('express-rate-limit');
 const { Server } = require('socket.io');
 const { connectDatabase, isConnected } = require('./models');
 const { setSocketServer } = require('./utils/socketServer');
+const { startTriageRescoreJob } = require('./jobs/triageRescoreJob');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -156,6 +157,9 @@ async function startServer() {
       throw new Error('Failed to connect to MongoDB');
     }
     
+    // Start optional triage queue re-scoring worker.
+    startTriageRescoreJob();
+
     // Start server
     const server = httpServer.listen(PORT, () => {
       console.log('');
