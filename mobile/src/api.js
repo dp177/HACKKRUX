@@ -437,87 +437,66 @@ export async function triageChatNext(conversationHistory) {
 }
 
 /**
- * Final analysis step. Sends the full conversation + patient context to the
- * multi-agent triage AI. Optionally attaches a medical record file.
+ * Calls the HuggingFace multi-agent triage AI directly.
+ * POST /api/v1/analyze-triage  (multipart/form-data)
  *
  * payload shape:
  * {
  *   patient_id: string,
  *   conversation_history: [{role, content}],
- *   available_departments: string[],        // e.g. ['Cardiology', 'Neurology']
- *   context: {
- *     is_conscious: boolean,
- *     breathing_difficulty: 'normal'|'mild'|'severe',
- *     age: number,
- *     comorbidities: string[],
- *     recent_trauma_or_surgery: boolean
- *   },
- *   vitals?: {
- *     heart_rate: number,
- *     blood_pressure: string,               // '120/80'
- *     temperature: number,
- *     o2_sat: number,
- *     respiratory_rate: number
- *   }
+ *   available_departments: string[],
+ *   context: { is_conscious, breathing_difficulty, age, comorbidities, recent_trauma_or_surgery },
+ *   vitals?: { heart_rate, blood_pressure, temperature, o2_sat, respiratory_rate }
  * }
+ * file (optional): { uri, name, type } from document/image picker
  *
- * file (optional): { uri, name, type } from expo-image-picker / document picker
- *
- * @returns {Promise<{
- *   patient_id: string,
- *   risk_score: number,
- *   urgency_level: string,
- *   department: string,
- *   explainability_summary: string,
- *   historical_summary: string,
- *   ai_analysis: {
- *     chief_complaint: string,
- *     extracted_symptoms: string[],
- *     detected_red_flags: string[],
- *     severity: string,
- *     symptom_category: string,
- *     onset_type: string,
- *     department: string,
- *     extracted_comorbidities: string[]
- *   },
- *   queue?: { position: number, estimatedWaitMinutes: number }
- * }>}
+ * Returns the standard { triage, queue, aiRaw } shape the app expects.
  */
 export async function triageAnalyze(payload, token, file = null) {
-  const API_URL = `${API_BASE_URL}/triage/analyze`;
-
+  // HuggingFace expects multipart/form-data with 'payload' as a stringified JSON string
+  const formData = new FormData();
+  formData.append('payload', JSON.stringify(payload));
   if (file) {
-    // multipart/form-data: backend expects { payload (stringified JSON), file }
-    const formData = new FormData();
-    formData.append('payload', JSON.stringify(payload));
     formData.append('file', {
       uri: file.uri,
       name: file.name || 'medical_record',
       type: file.type || 'application/octet-stream'
     });
-
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData
-    });
-
-    let data = null;
-    try { data = await response.json(); } catch { data = null; }
-
-    if (!response.ok) {
-      throw new Error(data?.error || `Triage analyze failed: ${response.status}`);
-    }
-    return data;
   }
 
-  // JSON path (no file)
-  return request('/triage/analyze', {
+  // Do NOT set Content-Type — let fetch set it automatically with the correct boundary
+  const response = await fetch(`${TRIAGE_AI_BASE}/api/v1/analyze-triage`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify(payload)
+    body: formData
   });
+
+  let ai = null;
+  try { ai = await response.json(); } catch { ai = null; }
+
+  if (!response.ok) {
+    const msg = ai?.detail?.[0]?.msg || ai?.error || `analyze-triage failed: ${response.status}`;
+    throw new Error(msg);
+  }
+
+  // Map flat HuggingFace response → { triage, queue } shape used by handleTriageComplete
+  return {
+    triage: {
+      id: null,
+      risk_score: ai.risk_score,
+      urgency_level: ai.urgency_level,
+      department: ai.department || ai.ai_analysis?.department,
+      explainability_summary: ai.explainability_summary,
+      historical_summary: ai.historical_summary,
+      red_flags: ai.ai_analysis?.detected_red_flags || []
+    },
+    queue: {
+      queuePosition: null,
+      estimatedWaitMinutes: null
+    },
+    aiRaw: ai
+  };
 }
+
 
 /**
  * Re-score a batch of waiting patients (used internally / by queue screens).

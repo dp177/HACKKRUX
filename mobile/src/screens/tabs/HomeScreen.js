@@ -524,13 +524,6 @@ export default function HomeScreen() {
     setSelectedDate('');
     setSelectedSlot('');
     setSelectedSlotId('');
-    setForm({
-      chiefComplaint: '',
-      symptoms: [],
-      symptomSeverity: 'moderate',
-      symptomDuration: 24,
-      vitalSigns: {}
-    });
     setBookingReason('');
     setHospitalDepartments([]);
     setDoctors([]);
