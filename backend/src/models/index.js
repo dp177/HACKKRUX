@@ -23,6 +23,7 @@ const Visit = require('./Visit');
 const VitalSignRecord = require('./VitalSignRecord');
 const Queue = require('./Queue');
 const User = require('./User');
+const WhatsAppConversation = require('./WhatsAppConversation');
 const HospitalOnboardingRequest = require('../features/hospital-onboarding/hospitalOnboardingRequestModel');
 const HospitalStaff = require('../features/hospital-portal/hospitalStaffModel');
 
@@ -81,6 +82,7 @@ module.exports = {
   VitalSignRecord,
   Queue,
   User,
+  WhatsAppConversation,
   HospitalOnboardingRequest,
   HospitalStaff,
   
