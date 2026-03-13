@@ -74,6 +74,14 @@ function normalizePhone(from) {
   return String(from || '').replace(/^whatsapp:/i, '').trim();
 }
 
+function normalizeCommand(text) {
+  return String(text || '').trim().toLowerCase();
+}
+
+function isRestartCommand(command) {
+  return ['start', 'restart', 'menu', 'home', 'hi', 'hello'].includes(command);
+}
+
 function parseChoice(text, max) {
   const n = Number(String(text || '').trim());
   if (!Number.isInteger(n) || n < 1 || n > max) return null;
@@ -313,7 +321,7 @@ router.post('/whatsapp-booking', async (req, res) => {
   const bodyRaw = req.body?.Body;
   const senderId = normalizePhone(senderRaw);
   const userMsg = String(bodyRaw || '').trim();
-  const msgLower = userMsg.toLowerCase();
+  const command = normalizeCommand(userMsg);
 
   logEvent('info', 'incoming_message', {
     sender: maskPhone(senderId),
@@ -328,7 +336,7 @@ router.post('/whatsapp-booking', async (req, res) => {
 
   try {
     const patient = await ensurePatientByPhone(senderId);
-    const shouldRestart = ['start', 'hi', 'hello', 'restart'].includes(msgLower);
+    const shouldRestart = isRestartCommand(command);
 
     logEvent('info', 'patient_resolved', {
       sender: maskPhone(senderId),
@@ -391,6 +399,10 @@ router.post('/whatsapp-booking', async (req, res) => {
       );
     }
 
+    if (!userMsg) {
+      return sendAssistant(conversation, res, 'Please send a number from the menu, or reply MENU to restart.');
+    }
+
     appendMessage(conversation, 'user', userMsg);
 
     const step = conversation.step;
@@ -410,7 +422,12 @@ router.post('/whatsapp-booking', async (req, res) => {
           input: userMsg,
           optionsCount: hospitals.length
         });
-        return sendAssistant(conversation, res, 'Invalid choice. Reply with a valid hospital number.');
+        const lines = hospitals.map((h, i) => `${i + 1}. ${h.name}`);
+        return sendAssistant(
+          conversation,
+          res,
+          `Invalid choice. Reply with a valid hospital number:\n${lines.join('\n')}\n\n(Reply MENU or START anytime to restart)`
+        );
       }
 
       const hospital = hospitals[index];
@@ -421,7 +438,7 @@ router.post('/whatsapp-booking', async (req, res) => {
           hospitalId: hospital.id,
           hospitalName: hospital.name
         });
-        return sendAssistant(conversation, res, 'No departments available in this hospital. Reply START to choose another hospital.');
+        return sendAssistant(conversation, res, 'No departments available in this hospital. Reply with another hospital number, or START to restart.');
       }
 
       const optionDepartments = departments.map((d) => ({ id: String(d._id), name: d.name }));
@@ -469,7 +486,7 @@ router.post('/whatsapp-booking', async (req, res) => {
           departmentId: department.id,
           departmentName: department.name
         });
-        return sendAssistant(conversation, res, 'No active doctors found in this department today. Reply START to restart.');
+        return sendAssistant(conversation, res, 'No active doctors found in this department today. Reply with another department number, or START to restart.');
       }
 
       const optionDoctors = doctors.map((d) => ({

@@ -85,6 +85,26 @@ export function bookAppointment(payload, token) {
   });
 }
 
+export function getUpcomingAppointments(token) {
+  return request('/appointments/upcoming', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export function getAppointmentHistory(token) {
+  return request('/appointments/history', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export function cancelAppointment(appointmentId, token, reason = 'Cancelled by patient') {
+  return request('/appointments/cancel', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ appointmentId, reason })
+  });
+}
+
 export function searchDoctors(query = '') {
   const queryParam = encodeURIComponent(query);
   return request(`/doctors/search?query=${queryParam}`);

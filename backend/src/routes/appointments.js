@@ -10,6 +10,13 @@ const { authenticatePatient, authenticateDoctor, authenticateAny } = require('..
 const { assertWithinNextWeek, generateSlots } = require('../utils/scheduling');
 const { getSocketServer } = require('../utils/socketServer');
 
+function localIsoDate(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // BOOK APPOINTMENT (Patient)
 // ═══════════════════════════════════════════════════════════════
@@ -482,6 +489,10 @@ router.post('/:appointmentId/cancel', authenticateAny, async (req, res) => {
     appointment.status = 'cancelled';
     appointment.cancellationReason = reason || `Cancelled by ${req.role}`;
     await appointment.save();
+
+    if (appointment.slotId) {
+      await DoctorSlot.findByIdAndUpdate(appointment.slotId, { status: 'AVAILABLE' });
+    }
     
     res.json({
       message: 'Appointment cancelled successfully',
@@ -491,6 +502,109 @@ router.post('/:appointmentId/cancel', authenticateAny, async (req, res) => {
   } catch (error) {
     console.error('Cancel appointment error:', error);
     res.status(500).json({ error: 'Failed to cancel appointment' });
+  }
+});
+
+router.post('/cancel', authenticatePatient, async (req, res) => {
+  try {
+    const { appointmentId, reason } = req.body;
+
+    if (!appointmentId) {
+      return res.status(400).json({ error: 'appointmentId is required' });
+    }
+
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    if (String(appointment.patientId) !== String(req.patient.id)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (appointment.status === 'completed' || appointment.status === 'cancelled') {
+      return res.status(400).json({ error: 'Appointment cannot be cancelled' });
+    }
+
+    appointment.status = 'cancelled';
+    appointment.cancellationReason = reason || 'Cancelled by patient';
+    await appointment.save();
+
+    if (appointment.slotId) {
+      await DoctorSlot.findByIdAndUpdate(appointment.slotId, { status: 'AVAILABLE' });
+    }
+
+    return res.json({ message: 'Appointment cancelled successfully', appointmentId: appointment.id });
+  } catch (error) {
+    console.error('Cancel appointment alias error:', error);
+    return res.status(500).json({ error: 'Failed to cancel appointment' });
+  }
+});
+
+router.get('/upcoming', authenticatePatient, async (req, res) => {
+  try {
+    const patientId = req.patient.id;
+    const today = localIsoDate();
+
+    const appointments = await Appointment.find({
+      patientId,
+      scheduledDate: { $gte: today },
+      status: { $in: ['scheduled', 'confirmed', 'checked-in', 'in-progress'] }
+    })
+      .populate('doctorId')
+      .populate('departmentId')
+      .populate('hospitalId')
+      .sort({ scheduledDate: 1, scheduledTime: 1 });
+
+    return res.json({
+      appointments: appointments.map((apt) => ({
+        appointmentId: apt.id,
+        hospitalName: apt.hospitalId?.name || 'Hospital',
+        doctorName: apt.doctorId ? `Dr. ${apt.doctorId.firstName} ${apt.doctorId.lastName}` : 'Doctor',
+        department: apt.departmentId?.name || null,
+        date: apt.scheduledDate,
+        time: apt.scheduledTime,
+        status: String(apt.status || '').toUpperCase(),
+        slotId: apt.slotId || null
+      }))
+    });
+  } catch (error) {
+    console.error('Upcoming appointments error:', error);
+    return res.status(500).json({ error: 'Failed to fetch upcoming appointments' });
+  }
+});
+
+router.get('/history', authenticatePatient, async (req, res) => {
+  try {
+    const patientId = req.patient.id;
+    const today = localIsoDate();
+
+    const appointments = await Appointment.find({
+      patientId,
+      $or: [
+        { scheduledDate: { $lt: today } },
+        { status: { $in: ['completed', 'cancelled', 'no-show'] } }
+      ]
+    })
+      .populate('doctorId')
+      .populate('departmentId')
+      .populate('hospitalId')
+      .sort({ scheduledDate: -1, scheduledTime: -1 });
+
+    return res.json({
+      history: appointments.map((apt) => ({
+        appointmentId: apt.id,
+        hospitalName: apt.hospitalId?.name || 'Hospital',
+        doctorName: apt.doctorId ? `Dr. ${apt.doctorId.firstName} ${apt.doctorId.lastName}` : 'Doctor',
+        department: apt.departmentId?.name || null,
+        date: apt.scheduledDate,
+        time: apt.scheduledTime,
+        status: String(apt.status || '').toUpperCase()
+      }))
+    });
+  } catch (error) {
+    console.error('Appointment history error:', error);
+    return res.status(500).json({ error: 'Failed to fetch appointment history' });
   }
 });
 

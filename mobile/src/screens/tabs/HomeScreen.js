@@ -17,6 +17,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   bookAppointment,
+  getUpcomingAppointments,
   getDoctorAvailableSlots,
   getDoctorsByDepartment,
   getHospitalByQrIdentifier,
@@ -125,6 +126,8 @@ export default function HomeScreen() {
   const [qrErrorMessage, setQrErrorMessage] = useState('');
   const [loadingDate, setLoadingDate] = useState('');
   const [bookingReason, setBookingReason] = useState('');
+  const [upcomingPreview, setUpcomingPreview] = useState(null);
+  const [upcomingPreviewLoading, setUpcomingPreviewLoading] = useState(false);
 
   const [form, setForm] = useState({
     chiefComplaint: '',
@@ -140,6 +143,10 @@ export default function HomeScreen() {
     loadHospitals();
     tryResumePendingQrScan();
   }, []);
+
+  useEffect(() => {
+    loadUpcomingPreview();
+  }, [token]);
 
   const currentRoute = routes[routes.length - 1]?.name || 'hospitals';
 
@@ -169,6 +176,25 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  }
+
+  async function loadUpcomingPreview() {
+    if (!token) {
+      setUpcomingPreview(null);
+      return;
+    }
+
+    setUpcomingPreviewLoading(true);
+    try {
+      const response = await getUpcomingAppointments(token);
+      const first = response?.appointments?.[0] || null;
+      setUpcomingPreview(first);
+    } catch (error) {
+      console.log('[HomeFlow] upcoming_preview_error', { message: error?.message || 'unknown' });
+      setUpcomingPreview(null);
+    } finally {
+      setUpcomingPreviewLoading(false);
     }
   }
 
@@ -525,6 +551,7 @@ export default function HomeScreen() {
       );
 
       console.log('[HomeFlow] booking_submit_success');
+    await loadUpcomingPreview();
       pushRoute('result');
     } catch (error) {
       console.log('[HomeFlow] booking_submit_error', { message: error?.message || 'unknown' });
@@ -604,6 +631,26 @@ export default function HomeScreen() {
                 <Ionicons name="qr-code-outline" size={18} color="#fff" />
                 <Text style={styles.scanBtnText}>Scan Hospital QR</Text>
               </TouchableOpacity>
+
+              <View style={styles.upcomingPreviewCard}>
+                <View style={styles.upcomingPreviewHead}>
+                  <Text style={styles.upcomingPreviewTitle}>Upcoming Appointment</Text>
+                  <TouchableOpacity onPress={loadUpcomingPreview}>
+                    <Text style={styles.upcomingPreviewRefresh}>Refresh</Text>
+                  </TouchableOpacity>
+                </View>
+                {upcomingPreviewLoading ? (
+                  <Text style={styles.upcomingPreviewMeta}>Loading...</Text>
+                ) : upcomingPreview ? (
+                  <>
+                    <Text style={styles.upcomingPreviewDoctor}>{upcomingPreview.doctorName || 'Doctor'}</Text>
+                    <Text style={styles.upcomingPreviewMeta}>{upcomingPreview.hospitalName || 'Hospital'}</Text>
+                    <Text style={styles.upcomingPreviewMeta}>{upcomingPreview.date} • {upcomingPreview.time || '-'}</Text>
+                  </>
+                ) : (
+                  <Text style={styles.upcomingPreviewMeta}>No upcoming appointments. Book from a hospital card below.</Text>
+                )}
+              </View>
 
               <Text style={styles.sectionTitle}>Hospitals</Text>
             </LinearGradient>
@@ -952,6 +999,38 @@ const styles = StyleSheet.create({
   scanBtnText: {
     color: '#fff',
     fontFamily: 'Inter_700Bold'
+  },
+  upcomingPreviewCard: {
+    marginTop: spacing.md,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: '#fff',
+    padding: spacing.md
+  },
+  upcomingPreviewHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6
+  },
+  upcomingPreviewTitle: {
+    fontFamily: 'Inter_700Bold',
+    color: colors.text
+  },
+  upcomingPreviewRefresh: {
+    fontFamily: 'Inter_600SemiBold',
+    color: colors.primaryDark,
+    fontSize: 12
+  },
+  upcomingPreviewDoctor: {
+    fontFamily: 'Inter_600SemiBold',
+    color: colors.text,
+    marginBottom: 2
+  },
+  upcomingPreviewMeta: {
+    fontFamily: 'Inter_400Regular',
+    color: colors.muted
   },
   searchWrap: { backgroundColor: '#fff', borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center' },
   searchInput: { flex: 1, marginLeft: 8, paddingVertical: 10, fontFamily: 'Inter_400Regular', color: colors.text },
