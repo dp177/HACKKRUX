@@ -18,6 +18,45 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 const GEMINI_API_KEY = process.env.WHATSAPP_GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.WHATSAPP_GEMINI_MODEL || 'gemini-1.5-flash';
 
+function maskPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return 'unknown';
+  if (digits.length <= 4) return `***${digits}`;
+  return `***${digits.slice(-4)}`;
+}
+
+function logEvent(level, event, details = {}) {
+  const payload = {
+    event,
+    at: new Date().toISOString(),
+    ...details
+  };
+
+  if (level === 'error') {
+    console.error('[WhatsAppFlow]', JSON.stringify(payload));
+    return;
+  }
+
+  if (level === 'warn') {
+    console.warn('[WhatsAppFlow]', JSON.stringify(payload));
+    return;
+  }
+
+  console.log('[WhatsAppFlow]', JSON.stringify(payload));
+}
+
+function setCollected(conversation, key, value) {
+  conversation.collectedData = conversation.collectedData || {};
+  conversation.collectedData[key] = value;
+  conversation.markModified('collectedData');
+}
+
+function setOption(conversation, key, value) {
+  conversation.options = conversation.options || {};
+  conversation.options[key] = value;
+  conversation.markModified('options');
+}
+
 function xmlEscape(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -123,6 +162,7 @@ function buildFallbackQuestions(historyMessages) {
 async function generateNextQuestions(historyMessages, patientLanguage = 'English') {
   const fallback = buildFallbackQuestions(historyMessages);
   if (!GEMINI_API_KEY) {
+    logEvent('warn', 'ai_questions_fallback_no_api_key', { patientLanguage });
     return fallback;
   }
 
@@ -145,6 +185,12 @@ async function generateNextQuestions(historyMessages, patientLanguage = 'English
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
 
   try {
+    logEvent('info', 'ai_questions_request_started', {
+      patientLanguage,
+      model: GEMINI_MODEL,
+      historyCount: historyMessages.length
+    });
+
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -163,12 +209,18 @@ async function generateNextQuestions(historyMessages, patientLanguage = 'English
     });
 
     if (!response.ok) {
+      logEvent('warn', 'ai_questions_http_not_ok', {
+        status: response.status,
+        statusText: response.statusText,
+        model: GEMINI_MODEL
+      });
       return fallback;
     }
 
     const payload = await response.json();
     const rawText = payload?.candidates?.[0]?.content?.parts?.[0]?.text || '';
     if (!rawText) {
+      logEvent('warn', 'ai_questions_empty_response', { model: GEMINI_MODEL });
       return fallback;
     }
 
@@ -176,15 +228,28 @@ async function generateNextQuestions(historyMessages, patientLanguage = 'English
     try {
       parsed = JSON.parse(rawText);
     } catch {
+      logEvent('warn', 'ai_questions_json_parse_failed', {
+        preview: rawText.slice(0, 120)
+      });
       return fallback;
     }
 
     if (!Array.isArray(parsed?.questions) || !parsed.questions.length) {
+      logEvent('warn', 'ai_questions_invalid_schema', {
+        keys: Object.keys(parsed || {})
+      });
       return fallback;
     }
 
+    logEvent('info', 'ai_questions_generated', {
+      count: parsed.questions.length,
+      firstQuestion: String(parsed.questions[0] || '').slice(0, 120)
+    });
     return parsed.questions.slice(0, 2).map((q) => String(q));
-  } catch {
+  } catch (error) {
+    logEvent('error', 'ai_questions_request_failed', {
+      message: error?.message || 'unknown error'
+    });
     return fallback;
   }
 }
@@ -199,8 +264,22 @@ function appendMessage(conversation, role, content) {
 }
 
 async function sendAssistant(conversation, res, message) {
+  logEvent('info', 'assistant_reply', {
+    conversationId: String(conversation._id || ''),
+    sender: maskPhone(conversation.senderId),
+    step: conversation.step,
+    status: conversation.status,
+    textPreview: String(message || '').slice(0, 120)
+  });
   appendMessage(conversation, 'assistant', message);
   await conversation.save();
+  logEvent('info', 'conversation_saved', {
+    conversationId: String(conversation._id || ''),
+    sender: maskPhone(conversation.senderId),
+    step: conversation.step,
+    status: conversation.status,
+    messageCount: (conversation.messages || []).length
+  });
   return res.type('text/xml').send(twimlMessage(message));
 }
 
@@ -236,7 +315,14 @@ router.post('/whatsapp-booking', async (req, res) => {
   const userMsg = String(bodyRaw || '').trim();
   const msgLower = userMsg.toLowerCase();
 
+  logEvent('info', 'incoming_message', {
+    sender: maskPhone(senderId),
+    textPreview: userMsg.slice(0, 120),
+    hasBody: Boolean(userMsg)
+  });
+
   if (!senderId) {
+    logEvent('warn', 'incoming_message_missing_sender');
     return res.status(400).type('text/plain').send('Missing sender');
   }
 
@@ -244,15 +330,35 @@ router.post('/whatsapp-booking', async (req, res) => {
     const patient = await ensurePatientByPhone(senderId);
     const shouldRestart = ['start', 'hi', 'hello', 'restart'].includes(msgLower);
 
+    logEvent('info', 'patient_resolved', {
+      sender: maskPhone(senderId),
+      patientId: String(patient._id),
+      shouldRestart
+    });
+
     let conversation = await getActiveConversation(senderId);
+
+    logEvent('info', 'conversation_loaded', {
+      sender: maskPhone(senderId),
+      found: Boolean(conversation),
+      conversationId: conversation ? String(conversation._id) : null,
+      step: conversation?.step || null,
+      status: conversation?.status || null
+    });
 
     if (!conversation || shouldRestart) {
       await expireActiveConversation(senderId);
 
       const hospitals = await Hospital.find({ isActive: true }).sort({ name: 1 }).limit(9);
       if (!hospitals.length) {
+        logEvent('warn', 'no_active_hospitals', { sender: maskPhone(senderId) });
         return res.type('text/xml').send(twimlMessage('No active hospitals are available right now. Please try again later.'));
       }
+
+      logEvent('info', 'hospitals_loaded', {
+        sender: maskPhone(senderId),
+        count: hospitals.length
+      });
 
       const optionHospitals = hospitals.map((h) => ({ id: String(h._id), name: h.name }));
 
@@ -271,6 +377,12 @@ router.post('/whatsapp-booking', async (req, res) => {
         appendMessage(conversation, 'user', userMsg);
       }
 
+      logEvent('info', 'conversation_started', {
+        sender: maskPhone(senderId),
+        conversationId: String(conversation._id),
+        step: conversation.step
+      });
+
       const lines = optionHospitals.map((h, i) => `${i + 1}. ${h.name}`);
       return sendAssistant(
         conversation,
@@ -282,25 +394,48 @@ router.post('/whatsapp-booking', async (req, res) => {
     appendMessage(conversation, 'user', userMsg);
 
     const step = conversation.step;
+    logEvent('info', 'processing_step', {
+      sender: maskPhone(senderId),
+      conversationId: String(conversation._id),
+      step,
+      input: userMsg.slice(0, 80)
+    });
 
     if (step === 'choose_hospital') {
       const hospitals = conversation.options?.hospitals || [];
       const index = parseChoice(userMsg, hospitals.length);
       if (index === null) {
+        logEvent('warn', 'invalid_hospital_choice', {
+          sender: maskPhone(senderId),
+          input: userMsg,
+          optionsCount: hospitals.length
+        });
         return sendAssistant(conversation, res, 'Invalid choice. Reply with a valid hospital number.');
       }
 
       const hospital = hospitals[index];
       const departments = await Department.find({ hospitalId: hospital.id, isActive: true }).sort({ name: 1 }).limit(9);
       if (!departments.length) {
+        logEvent('warn', 'no_departments_for_hospital', {
+          sender: maskPhone(senderId),
+          hospitalId: hospital.id,
+          hospitalName: hospital.name
+        });
         return sendAssistant(conversation, res, 'No departments available in this hospital. Reply START to choose another hospital.');
       }
 
       const optionDepartments = departments.map((d) => ({ id: String(d._id), name: d.name }));
-      conversation.collectedData.hospitalId = hospital.id;
-      conversation.collectedData.hospitalName = hospital.name;
+      setCollected(conversation, 'hospitalId', hospital.id);
+      setCollected(conversation, 'hospitalName', hospital.name);
       conversation.step = 'choose_department';
-      conversation.options.departments = optionDepartments;
+      setOption(conversation, 'departments', optionDepartments);
+
+      logEvent('info', 'hospital_selected', {
+        sender: maskPhone(senderId),
+        hospitalId: hospital.id,
+        hospitalName: hospital.name,
+        departmentCount: optionDepartments.length
+      });
 
       const lines = optionDepartments.map((d, i) => `${i + 1}. ${d.name}`);
       return sendAssistant(conversation, res, `Selected: ${hospital.name}\nChoose department:\n${lines.join('\n')}`);
@@ -310,6 +445,12 @@ router.post('/whatsapp-booking', async (req, res) => {
       const departments = conversation.options?.departments || [];
       const index = parseChoice(userMsg, departments.length);
       if (index === null) {
+        logEvent('warn', 'invalid_department_choice', {
+          sender: maskPhone(senderId),
+          input: userMsg,
+          optionsCount: departments.length,
+          available: departments.map((d, i) => `${i + 1}:${d.name}`).join(',')
+        });
         return sendAssistant(conversation, res, 'Invalid choice. Reply with a valid department number.');
       }
 
@@ -324,6 +465,11 @@ router.post('/whatsapp-booking', async (req, res) => {
         .limit(9);
 
       if (!doctors.length) {
+        logEvent('warn', 'no_doctors_for_department', {
+          sender: maskPhone(senderId),
+          departmentId: department.id,
+          departmentName: department.name
+        });
         return sendAssistant(conversation, res, 'No active doctors found in this department today. Reply START to restart.');
       }
 
@@ -333,10 +479,17 @@ router.post('/whatsapp-booking', async (req, res) => {
         specialty: d.specialty
       }));
 
-      conversation.collectedData.departmentId = department.id;
-      conversation.collectedData.departmentName = department.name;
+      setCollected(conversation, 'departmentId', department.id);
+      setCollected(conversation, 'departmentName', department.name);
       conversation.step = 'choose_doctor';
-      conversation.options.doctors = optionDoctors;
+      setOption(conversation, 'doctors', optionDoctors);
+
+      logEvent('info', 'department_selected', {
+        sender: maskPhone(senderId),
+        departmentId: department.id,
+        departmentName: department.name,
+        doctorCount: optionDoctors.length
+      });
 
       const lines = optionDoctors.map((d, i) => `${i + 1}. ${d.name} (${d.specialty})`);
       return sendAssistant(conversation, res, `Selected: ${department.name}\nChoose doctor:\n${lines.join('\n')}`);
@@ -346,17 +499,29 @@ router.post('/whatsapp-booking', async (req, res) => {
       const doctors = conversation.options?.doctors || [];
       const index = parseChoice(userMsg, doctors.length);
       if (index === null) {
+        logEvent('warn', 'invalid_doctor_choice', {
+          sender: maskPhone(senderId),
+          input: userMsg,
+          optionsCount: doctors.length
+        });
         return sendAssistant(conversation, res, 'Invalid choice. Reply with a valid doctor number.');
       }
 
       const doctor = doctors[index];
       const dates = getUpcomingDates(3);
 
-      conversation.collectedData.doctorId = doctor.id;
-      conversation.collectedData.doctorName = doctor.name;
-      conversation.collectedData.specialty = doctor.specialty;
+      setCollected(conversation, 'doctorId', doctor.id);
+      setCollected(conversation, 'doctorName', doctor.name);
+      setCollected(conversation, 'specialty', doctor.specialty);
       conversation.step = 'choose_date';
-      conversation.options.dates = dates;
+      setOption(conversation, 'dates', dates);
+
+      logEvent('info', 'doctor_selected', {
+        sender: maskPhone(senderId),
+        doctorId: doctor.id,
+        doctorName: doctor.name,
+        offeredDates: dates
+      });
 
       const lines = dates.map((d, i) => `${i + 1}. ${d}`);
       return sendAssistant(conversation, res, `Selected: ${doctor.name}\nChoose date:\n${lines.join('\n')}`);
@@ -366,6 +531,11 @@ router.post('/whatsapp-booking', async (req, res) => {
       const dates = conversation.options?.dates || [];
       const index = parseChoice(userMsg, dates.length);
       if (index === null) {
+        logEvent('warn', 'invalid_date_choice', {
+          sender: maskPhone(senderId),
+          input: userMsg,
+          optionsCount: dates.length
+        });
         return sendAssistant(conversation, res, 'Invalid choice. Reply with a valid date number.');
       }
 
@@ -374,6 +544,10 @@ router.post('/whatsapp-booking', async (req, res) => {
       if (!doctor) {
         conversation.status = 'abandoned';
         conversation.step = 'error';
+        logEvent('error', 'doctor_not_found_during_date_selection', {
+          sender: maskPhone(senderId),
+          doctorId: conversation.collectedData.doctorId
+        });
         return sendAssistant(conversation, res, 'Doctor not found now. Please reply START to begin again.');
       }
 
@@ -388,12 +562,25 @@ router.post('/whatsapp-booking', async (req, res) => {
       const slots = buildDailySlots(9, 17, duration, bookedTimes).slice(0, 8);
 
       if (!slots.length) {
+        logEvent('warn', 'no_slots_available', {
+          sender: maskPhone(senderId),
+          doctorId: String(doctor._id),
+          selectedDate
+        });
         return sendAssistant(conversation, res, 'No slots available on this date. Reply with another date number.');
       }
 
-      conversation.collectedData.scheduledDate = selectedDate;
+      setCollected(conversation, 'scheduledDate', selectedDate);
       conversation.step = 'choose_slot';
-      conversation.options.slots = slots;
+      setOption(conversation, 'slots', slots);
+
+      logEvent('info', 'slots_generated', {
+        sender: maskPhone(senderId),
+        doctorId: String(doctor._id),
+        selectedDate,
+        offeredSlots: slots.length,
+        bookedCount: existing.length
+      });
 
       const lines = slots.map((s, i) => `${i + 1}. ${s}`);
       return sendAssistant(conversation, res, `Available slots on ${selectedDate}:\n${lines.join('\n')}`);
@@ -403,46 +590,61 @@ router.post('/whatsapp-booking', async (req, res) => {
       const slots = conversation.options?.slots || [];
       const index = parseChoice(userMsg, slots.length);
       if (index === null) {
+        logEvent('warn', 'invalid_slot_choice', {
+          sender: maskPhone(senderId),
+          input: userMsg,
+          optionsCount: slots.length
+        });
         return sendAssistant(conversation, res, 'Invalid choice. Reply with a valid slot number.');
       }
 
-      conversation.collectedData.scheduledTime = slots[index];
+      setCollected(conversation, 'scheduledTime', slots[index]);
       conversation.step = 'ask_problem';
+      logEvent('info', 'slot_selected', {
+        sender: maskPhone(senderId),
+        scheduledDate: conversation.collectedData.scheduledDate,
+        scheduledTime: slots[index]
+      });
       return sendAssistant(conversation, res, 'What is your main medical problem today?');
     }
 
     if (step === 'ask_problem') {
-      conversation.collectedData.problem = userMsg;
+      setCollected(conversation, 'problem', userMsg);
       conversation.step = 'ask_duration';
       return sendAssistant(conversation, res, 'How long has this been happening? (example: 2 hours, 3 days)');
     }
 
     if (step === 'ask_duration') {
-      conversation.collectedData.duration = userMsg;
+      setCollected(conversation, 'duration', userMsg);
       const aiQuestions = await generateNextQuestions(
         conversation.messages,
         patient.preferredLanguage || 'English'
       );
       conversation.aiPendingQuestions = aiQuestions;
+      conversation.markModified('aiPendingQuestions');
       conversation.step = 'ask_ai_1';
+      logEvent('info', 'duration_captured_ai_questions_prepared', {
+        sender: maskPhone(senderId),
+        aiQuestionCount: aiQuestions.length
+      });
       return sendAssistant(conversation, res, `I understand. Let me ask a follow-up:\n\n${aiQuestions[0]}`);
     }
 
     if (step === 'ask_ai_1') {
-      conversation.collectedData.aiAnswer1 = userMsg;
+      setCollected(conversation, 'aiAnswer1', userMsg);
       conversation.step = 'ask_ai_2';
       const q2 = conversation.aiPendingQuestions?.[1] || 'Are you feeling any dizziness or weakness?';
       return sendAssistant(conversation, res, q2);
     }
 
     if (step === 'ask_ai_2') {
-      conversation.collectedData.aiAnswer2 = userMsg;
+      setCollected(conversation, 'aiAnswer2', userMsg);
       conversation.step = 'ask_comorbidities';
       return sendAssistant(conversation, res, 'One last thing: Do you have long-term health issues like Diabetes or Blood Pressure?');
     }
 
     if (step === 'ask_comorbidities') {
-      conversation.collectedData.comorbidities = userMsg;
+      setCollected(conversation, 'comorbidities', userMsg);
 
       const conflict = await Appointment.findOne({
         doctorId: conversation.collectedData.doctorId,
@@ -454,6 +656,12 @@ router.post('/whatsapp-booking', async (req, res) => {
       if (conflict) {
         conversation.status = 'abandoned';
         conversation.step = 'slot_conflict';
+        logEvent('warn', 'slot_conflict_at_booking', {
+          sender: maskPhone(senderId),
+          doctorId: conversation.collectedData.doctorId,
+          date: conversation.collectedData.scheduledDate,
+          time: conversation.collectedData.scheduledTime
+        });
         return sendAssistant(conversation, res, 'That slot was just booked by someone else. Please reply START to book another slot.');
       }
 
@@ -476,7 +684,16 @@ router.post('/whatsapp-booking', async (req, res) => {
 
       conversation.status = 'completed';
       conversation.step = 'completed';
-      conversation.collectedData.appointmentId = String(appointment._id);
+      setCollected(conversation, 'appointmentId', String(appointment._id));
+
+      logEvent('info', 'appointment_created', {
+        sender: maskPhone(senderId),
+        appointmentId: String(appointment._id),
+        patientId: String(conversation.patientId),
+        doctorId: conversation.collectedData.doctorId,
+        date: conversation.collectedData.scheduledDate,
+        time: conversation.collectedData.scheduledTime
+      });
 
       const summary = [
         'Slot booked successfully.',
@@ -496,9 +713,17 @@ router.post('/whatsapp-booking', async (req, res) => {
 
     conversation.status = 'abandoned';
     conversation.step = 'expired';
+    logEvent('warn', 'unknown_or_expired_step', {
+      sender: maskPhone(senderId),
+      step
+    });
     return sendAssistant(conversation, res, 'Session expired. Reply START to begin booking again.');
   } catch (error) {
-    console.error('WhatsApp booking error:', error);
+    logEvent('error', 'whatsapp_booking_error', {
+      sender: maskPhone(senderId),
+      message: error?.message || 'unknown error',
+      stack: error?.stack || null
+    });
     return res.type('text/xml').send(twimlMessage('Sorry, we hit a server error. Please reply START and try again.'));
   }
 });
