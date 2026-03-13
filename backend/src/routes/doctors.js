@@ -23,6 +23,13 @@ const { getSocketServer } = require('../utils/socketServer');
 
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001';
 
+function localIsoDate(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function ensureDoctorAccess(req, doctorId) {
   return String(req.userId) === String(doctorId);
 }
@@ -103,7 +110,10 @@ async function regenerateDoctorSlots({ doctor, date }) {
 router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
   try {
     const {doctorId } = req.params;
-    const today = new Date().toISOString().split('T')[0];
+    const today = localIsoDate();
+    const next7 = new Date();
+    next7.setDate(next7.getDate() + 7);
+    const next7Iso = localIsoDate(next7);
     
     // Get doctor info
     const doctor = await Doctor.findById(doctorId).populate('departmentId');
@@ -120,6 +130,14 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
     })
     .populate('patientId')
     .sort({ scheduledTime: 1 });
+
+    const upcomingAppointments = await Appointment.find({
+      doctorId,
+      scheduledDate: { $gte: today, $lte: next7Iso },
+      status: { $in: ['scheduled', 'confirmed', 'checked-in', 'in-progress'] }
+    })
+    .populate('patientId')
+    .sort({ scheduledDate: 1, scheduledTime: 1 });
     
     // Get current queue from Python triage engine
     let queueData = { queue: [], statistics: {} };
@@ -144,6 +162,7 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
         department: doctor.departmentId?.name || 'General',
         consultationDuration: doctor.consultationDuration
       },
+      todayDate: today,
       
       todaySchedule: {
         totalAppointments: appointments.length,
@@ -156,6 +175,23 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
             name: `${app.patientId.firstName} ${app.patientId.lastName}`,
             age: Math.floor((new Date() - new Date(app.patientId.dateOfBirth)) / 31557600000),
             phone: app.patientId.phone
+          },
+          type: app.appointmentType,
+          status: app.status,
+          chiefComplaint: app.chiefComplaint
+        }))
+      },
+
+      upcomingAppointments: {
+        total: upcomingAppointments.length,
+        appointments: upcomingAppointments.map(app => ({
+          id: app._id,
+          date: app.scheduledDate,
+          time: app.scheduledTime,
+          duration: app.duration,
+          patient: {
+            id: app.patientId?._id,
+            name: app.patientId ? `${app.patientId.firstName} ${app.patientId.lastName}` : 'Patient'
           },
           type: app.appointmentType,
           status: app.status,

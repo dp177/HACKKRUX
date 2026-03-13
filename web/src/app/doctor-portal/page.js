@@ -145,15 +145,14 @@ export default function DoctorPortalPage() {
   }, [dashboard]);
 
   const appointments = useMemo(() => {
-    const fromApi = dashboard?.todaySchedule?.appointments || [];
-    if (!fromApi.length) {
-      return [
-        { id: 'ap-1', time: '10:00 AM', patient: { name: 'Amit Rao' }, status: 'waiting' },
-        { id: 'ap-2', time: '10:20 AM', patient: { name: 'Kiran Das' }, status: 'completed' },
-        { id: 'ap-3', time: '10:40 AM', patient: { name: 'Riya Shah' }, status: 'upcoming' }
-      ];
-    }
-    return fromApi;
+    const fromUpcoming = dashboard?.upcomingAppointments?.appointments || [];
+    const fromToday = dashboard?.todaySchedule?.appointments || [];
+
+    const source = fromUpcoming.length ? fromUpcoming : fromToday;
+    return source.map((item) => ({
+      ...item,
+      displayDate: item.date || dashboard?.todayDate || 'Today'
+    }));
   }, [dashboard]);
 
   const metrics = useMemo(() => {
@@ -478,13 +477,14 @@ export default function DoctorPortalPage() {
       <section className="card space-y-4">
         <h2 className="text-xl font-semibold text-slate-900">Appointments</h2>
         <div className="space-y-3">
+          {!appointments.length && <p className="text-sm text-slate-500">No booked appointments found for upcoming days.</p>}
           {appointments.map((item) => {
             const state = appointmentsState[item.id] || {};
             const status = state.status || item.status || 'upcoming';
             return (
               <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-slate-800">{item.time} - {item.patient?.name || 'Patient'}</p>
+                  <p className="text-sm font-semibold text-slate-800">{item.displayDate} {item.time} - {item.patient?.name || 'Patient'}</p>
                   <span className="text-xs uppercase tracking-wide text-slate-500">{status}</span>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">

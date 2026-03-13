@@ -73,15 +73,13 @@ router.post('/google', async (req, res) => {
         email,
         name,
         profilePicture,
-        role: 'PATIENT'
+        role: 'patient'
       });
     } else {
       user.googleId = googleId;
       user.name = name;
       user.profilePicture = profilePicture;
-      if (!user.role) {
-        user.role = 'PATIENT';
-      }
+      user.role = String(user.role || 'patient').toLowerCase();
       await user.save();
     }
 
@@ -617,13 +615,13 @@ router.get('/google/mobile/callback', async (req, res) => {
         email,
         name: userInfo.name,
         profilePicture: userInfo.picture,
-        role: 'PATIENT'
+        role: 'patient'
       });
     } else {
       user.googleId = userInfo.sub;
       user.name = userInfo.name;
       user.profilePicture = userInfo.picture;
-      if (!user.role) user.role = 'PATIENT';
+      user.role = String(user.role || 'patient').toLowerCase();
       await user.save();
     }
 

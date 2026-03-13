@@ -75,7 +75,9 @@ async function authenticateDoctor(req, res, next) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
     
-    if (decoded.role !== 'doctor') {
+    const decodedRole = String(decoded.role || '').toLowerCase();
+
+    if (decodedRole !== 'doctor') {
       return res.status(403).json({ error: 'Access denied. Doctor role required.' });
     }
     
@@ -121,7 +123,9 @@ async function authenticatePatient(req, res, next) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
     
-    if (decoded.role !== 'patient') {
+    const decodedRole = String(decoded.role || '').toLowerCase();
+
+    if (decodedRole !== 'patient') {
       return res.status(403).json({ error: 'Access denied. Patient role required.' });
     }
     
@@ -163,7 +167,9 @@ async function authenticateAny(req, res, next) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
     
-    if (decoded.role === 'doctor') {
+    const decodedRole = String(decoded.role || '').toLowerCase();
+
+    if (decodedRole === 'doctor') {
       const doctor = await Doctor.findById(decoded.userId);
       if (!doctor || !doctor.isActive) {
         return res.status(401).json({ error: 'Doctor not found or inactive' });
@@ -171,7 +177,7 @@ async function authenticateAny(req, res, next) {
       req.doctor = doctor;
       req.userId = doctor.id;
       req.role = 'doctor';
-    } else if (decoded.role === 'patient') {
+    } else if (decodedRole === 'patient') {
       const patient = await Patient.findById(decoded.userId);
       if (!patient) {
         return res.status(401).json({ error: 'Patient not found' });
@@ -209,14 +215,16 @@ async function optionalAuth(req, res, next) {
       return next(); // Invalid token, but continue
     }
     
-    if (decoded.role === 'doctor') {
+    const decodedRole = String(decoded.role || '').toLowerCase();
+
+    if (decodedRole === 'doctor') {
       const doctor = await Doctor.findById(decoded.userId);
       if (doctor && doctor.isActive) {
         req.doctor = doctor;
         req.userId = doctor.id;
         req.role = 'doctor';
       }
-    } else if (decoded.role === 'patient') {
+    } else if (decodedRole === 'patient') {
       const patient = await Patient.findById(decoded.userId);
       if (patient) {
         req.patient = patient;
