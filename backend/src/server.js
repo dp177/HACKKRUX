@@ -86,6 +86,9 @@ app.use('/api/hospitals', require('./routes/hospitals'));
 // Walk-in routes (self check-in + receptionist assisted)
 app.use('/api/walkins', require('./routes/walkins'));
 
+// WhatsApp booking webhook route (Twilio)
+app.use('/api/v1', require('./routes/whatsapp'));
+
 // Hospital onboarding request routes (public)
 app.use('/api/hospital-onboarding', require('./features/hospital-onboarding/hospitalOnboardingRoutes'));
 
