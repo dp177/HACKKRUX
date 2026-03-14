@@ -1,9 +1,23 @@
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
-import * as Notifications from 'expo-notifications';
 
-try {
-  if (typeof Notifications?.setNotificationHandler === 'function') {
+let notificationsHandlerInitialized = false;
+
+async function loadNotificationsModule() {
+  try {
+    const Notifications = await import('expo-notifications');
+    return Notifications;
+  } catch (error) {
+    console.log('[Push] expo-notifications module unavailable', { message: error?.message || 'unknown error' });
+    return null;
+  }
+}
+
+async function ensureNotificationHandler(Notifications) {
+  if (notificationsHandlerInitialized) return;
+  if (!Notifications || typeof Notifications?.setNotificationHandler !== 'function') return;
+
+  try {
     Notifications.setNotificationHandler({
       handleNotification: async () => ({
         shouldShowAlert: true,
@@ -11,9 +25,10 @@ try {
         shouldSetBadge: false
       })
     });
+    notificationsHandlerInitialized = true;
+  } catch (error) {
+    console.log('[Push] notification handler setup skipped', { message: error?.message || 'unknown error' });
   }
-} catch (error) {
-  console.log('[Push] notification handler setup skipped', { message: error?.message || 'unknown error' });
 }
 
 export async function registerForPushNotificationsAsync() {
@@ -23,6 +38,9 @@ export async function registerForPushNotificationsAsync() {
     console.log('[Push] remote push skipped in Expo Go; use a development build for push notifications');
     return null;
   }
+
+  const Notifications = await loadNotificationsModule();
+  await ensureNotificationHandler(Notifications);
 
   if (
     !Notifications

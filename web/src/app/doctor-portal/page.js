@@ -8,7 +8,6 @@ import {
   addDoctorSlot,
   addDoctorBreak,
   callNextPatient,
-  endConsultationPatient,
   deleteDoctorBreak,
   deleteDoctorScheduleForDate,
   deleteDoctorSlot,
@@ -80,8 +79,12 @@ function queueRowFromRaw(item, index) {
   const rawStatus = String(item.status || '').toUpperCase();
   const status = ['IN_CONSULTATION', 'WAITING', 'COMPLETED', 'CANCELLED'].includes(rawStatus) ? rawStatus : 'WAITING';
   const queuePosition = Number(item.queue_position ?? item.queuePosition ?? index + 1);
+  const queueEntryId = String(item.queue_entry_id || item.queueEntryId || item.entryId || '');
+  const rowKey = queueEntryId || `${patientId || 'patient'}-${status}-${queuePosition}-${index}`;
   return {
     id: patientId || item.id || `queue-${index}`,
+    rowKey,
+    queueEntryId: queueEntryId || null,
     name: item.patient_name || item.patientName || item.name || `Patient ${index + 1}`,
     symptoms: item.chief_complaint || item.symptoms || 'Symptoms pending',
     department: item.department || item.ai_analysis?.department || 'General',
@@ -388,18 +391,6 @@ export default function DoctorPortalPage() {
     }
   }
 
-  async function handleEndConsultation() {
-    if (!doctor?.id || !token) return;
-
-    try {
-      const response = await endConsultationPatient(doctor.id, token);
-      toast.success(response.message || 'Consultation ended');
-      loadPortalData(true);
-    } catch (error) {
-      toast.error(error.message || 'Unable to end consultation');
-    }
-  }
-
   function handleLogout() {
     localStorage.removeItem('doctorPortalToken');
     localStorage.removeItem('doctorPortalDoctor');
@@ -471,7 +462,7 @@ export default function DoctorPortalPage() {
             <div className="space-y-2">
               {urgentCases.map((item) => (
                 <button
-                  key={item.id}
+                  key={item.rowKey}
                   type="button"
                   className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-slate-700 hover:border-accent-300"
                   onClick={() => handleSelectQueuePatient(item)}
@@ -530,7 +521,6 @@ export default function DoctorPortalPage() {
             <h2 className="text-xl font-semibold text-slate-900">Patient Queue</h2>
             <div className="flex items-center gap-2">
               <button type="button" onClick={handleCallNextPatient}>Call Top Patient</button>
-              <button type="button" className="secondary" onClick={handleEndConsultation}>End Consultation</button>
               <button type="button" className="secondary" onClick={() => loadPortalData(false)}>Refresh Queue</button>
             </div>
           </div>
@@ -557,7 +547,7 @@ export default function DoctorPortalPage() {
                 ) : null}
                 {queue.map((item) => (
                   <tr
-                    key={item.id}
+                    key={item.rowKey}
                     className="cursor-pointer rounded-xl border border-slate-200 bg-white hover:bg-slate-50"
                     onClick={() => handleSelectQueuePatient(item)}
                   >
