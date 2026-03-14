@@ -13,8 +13,14 @@ import VoiceTriageAgent from '../../components/VoiceTriageAgent';
 import { colors, radii, spacing } from '../../theme/tokens';
 
 const TRIAGE_COMPLETE_TOKEN = '[TRIAGE_COMPLETE]';
+const FIXED_BOOTSTRAP_QUESTION_COUNT = 2;
+const MAX_DYNAMIC_FOLLOWUP_QUESTIONS = 4;
 const BREATHING_OPTIONS = ['normal', 'mild', 'severe'];
 const COMORBIDITY_OPTIONS = ['Diabetes', 'Hypertension', 'Heart disease', 'Asthma', 'COPD', 'Kidney disease'];
+
+function countAssistantQuestions(messages = []) {
+  return (Array.isArray(messages) ? messages : []).filter((item) => item?.role === 'assistant' && String(item?.content || '').trim()).length;
+}
 
 /**
  * Multi-step AI triage flow:
@@ -74,10 +80,27 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
   async function askNextQuestion(baseHistory) {
     try {
       setAskingNext(true);
+      const askedAssistantQuestions = countAssistantQuestions(baseHistory);
+      const dynamicFollowUpsAsked = Math.max(0, askedAssistantQuestions - FIXED_BOOTSTRAP_QUESTION_COUNT);
+
+      if (dynamicFollowUpsAsked >= MAX_DYNAMIC_FOLLOWUP_QUESTIONS) {
+        console.log('[TriageForm] dynamic_limit_reached', {
+          debugSessionId,
+          inputMode: effectiveInputMode,
+          askedAssistantQuestions,
+          dynamicFollowUpsAsked,
+          maxDynamicFollowUps: MAX_DYNAMIC_FOLLOWUP_QUESTIONS
+        });
+        setStep('context');
+        return;
+      }
+
       console.log('[TriageForm] ask_next_start', {
         debugSessionId,
         inputMode: effectiveInputMode,
-        historyLength: Array.isArray(baseHistory) ? baseHistory.length : 0
+        historyLength: Array.isArray(baseHistory) ? baseHistory.length : 0,
+        dynamicFollowUpsAsked,
+        maxDynamicFollowUps: MAX_DYNAMIC_FOLLOWUP_QUESTIONS
       });
       const result = await triageChatNext(baseHistory);
       const nextQuestion = Array.isArray(result?.questions) ? result.questions[0] : null;

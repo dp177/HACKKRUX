@@ -7,6 +7,11 @@ import { triageChatNext, triageTranscribeAudio } from '../api';
 import { colors, radii, spacing } from '../theme/tokens';
 
 const TRIAGE_COMPLETE_TOKEN = '[TRIAGE_COMPLETE]';
+const MAX_DYNAMIC_FOLLOWUP_QUESTIONS = 4;
+
+function countAssistantQuestions(messages = []) {
+  return (Array.isArray(messages) ? messages : []).filter((item) => item?.role === 'assistant' && String(item?.content || '').trim()).length;
+}
 
 function getMimeTypeFromUri(uri) {
   const normalized = String(uri || '').toLowerCase();
@@ -260,7 +265,25 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
   async function askNextQuestion(history) {
     try {
       setBusy(true);
-      logEvent('ask_next_start', { historyLength: Array.isArray(history) ? history.length : 0 });
+      const dynamicFollowUpsAsked = countAssistantQuestions(history);
+
+      if (dynamicFollowUpsAsked >= MAX_DYNAMIC_FOLLOWUP_QUESTIONS) {
+        logEvent('dynamic_limit_reached', {
+          historyLength: Array.isArray(history) ? history.length : 0,
+          dynamicFollowUpsAsked,
+          maxDynamicFollowUps: MAX_DYNAMIC_FOLLOWUP_QUESTIONS
+        });
+        await stopListening();
+        await speak('I have enough information. Moving to final triage analysis now.');
+        onComplete?.(history);
+        return;
+      }
+
+      logEvent('ask_next_start', {
+        historyLength: Array.isArray(history) ? history.length : 0,
+        dynamicFollowUpsAsked,
+        maxDynamicFollowUps: MAX_DYNAMIC_FOLLOWUP_QUESTIONS
+      });
 
       const data = await triageChatNext(history);
       const nextQuestion = Array.isArray(data?.questions) ? data.questions[0] : null;
