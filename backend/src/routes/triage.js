@@ -439,13 +439,11 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       || sourceBody.chosenDepartment
       || sourceBody.selected_department
       || sourceBody.selectedDepartment
+      || sourceBody.department_id
+      || sourceBody.departmentId
       || context?.chosen_department
       || context?.chosenDepartment
     );
-    const availableDepartmentsFromBody = normalizeAvailableDepartments(sourceBody.available_departments || sourceBody.availableDepartments);
-    const availableDepartments = availableDepartmentsFromBody.length
-      ? availableDepartmentsFromBody
-      : (chosenDepartment ? [chosenDepartment] : []);
     const inputMode = normalizeInputMode(sourceBody.input_mode || sourceBody.inputMode || context?.input_mode || context?.inputMode);
     const chiefComplaint = inferChiefComplaint(sourceBody.chief_complaint || sourceBody.chiefComplaint, context, conversationHistory) || 'General consultation';
 
@@ -457,7 +455,6 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       hasWrappedPayload: Boolean(payloadBody && typeof payloadBody === 'object'),
       hasFile: Boolean(req.file?.buffer?.length),
       historyLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0,
-      availableDepartmentsCount: Array.isArray(availableDepartments) ? availableDepartments.length : 0,
       inputMode
     });
 
@@ -468,7 +465,6 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       contextKeys: Object.keys(context || {}),
       aiVitalsKeys: Object.keys(aiVitals || {}),
       recordVitalsKeys: Object.keys(recordVitals || {}),
-      availableDepartmentsPreview: availableDepartments.slice(0, 5),
       chosenDepartment: chosenDepartment || null
     });
 
@@ -485,7 +481,6 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
     const payload = {
       patient_id: patientId,
       conversation_history: conversationHistory,
-      available_departments: Array.isArray(availableDepartments) ? availableDepartments : [],
       chosen_department: chosenDepartment || null,
       context: context || {},
       vitals: aiVitals
