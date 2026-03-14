@@ -34,6 +34,111 @@ function buildTraceId(prefix = 'triage') {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function normalizeOptionalString(value) {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
+}
+
+function toFiniteNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const normalized = Number(value);
+  return Number.isFinite(normalized) ? normalized : null;
+}
+
+function compactObject(value) {
+  return Object.fromEntries(
+    Object.entries(value || {}).filter(([, item]) => item !== null && item !== undefined && item !== '')
+  );
+}
+
+function normalizeConversationHistory(value) {
+  const parsed = parseMaybeJson(value, []);
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((entry) => {
+      if (typeof entry === 'string') {
+        const content = normalizeOptionalString(entry);
+        return content ? { role: 'user', content } : null;
+      }
+
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+
+      const content = normalizeOptionalString(
+        entry.content
+        || entry.text
+        || entry.message
+        || entry.transcript
+      );
+      if (!content) return null;
+
+      const roleCandidate = normalizeOptionalString(entry.role || entry.speaker)?.toLowerCase();
+      const role = ['assistant', 'user', 'system'].includes(roleCandidate) ? roleCandidate : 'user';
+      return { role, content };
+    })
+    .filter(Boolean);
+}
+
+function normalizeAvailableDepartments(value) {
+  const parsed = parseMaybeJson(value, []);
+  if (!Array.isArray(parsed)) return [];
+
+  return Array.from(new Set(parsed
+    .map((item) => {
+      if (typeof item === 'string') return normalizeOptionalString(item);
+      if (!item || typeof item !== 'object') return null;
+      return normalizeOptionalString(item.name || item.department || item.label || item.value || item.id || item._id);
+    })
+    .filter(Boolean)));
+}
+
+function normalizeVitalsForAi(value) {
+  const vitals = parseMaybeJson(value, {});
+  if (!vitals || typeof vitals !== 'object') return {};
+
+  return compactObject({
+    heart_rate: toFiniteNumber(vitals.heart_rate ?? vitals.heartRate ?? vitals.hr),
+    blood_pressure: normalizeOptionalString(vitals.blood_pressure ?? vitals.bloodPressure ?? vitals.bp),
+    temperature: toFiniteNumber(vitals.temperature ?? vitals.temp),
+    o2_sat: toFiniteNumber(vitals.o2_sat ?? vitals.oxygen_saturation ?? vitals.oxygenSaturation ?? vitals.o2),
+    respiratory_rate: toFiniteNumber(vitals.respiratory_rate ?? vitals.respiratoryRate ?? vitals.rr),
+    pain_level: toFiniteNumber(vitals.pain_level ?? vitals.painLevel ?? vitals.pain)
+  });
+}
+
+function normalizeVitalsForRecord(value) {
+  const vitals = parseMaybeJson(value, {});
+  if (!vitals || typeof vitals !== 'object') return {};
+
+  return compactObject({
+    hr: toFiniteNumber(vitals.hr ?? vitals.heart_rate ?? vitals.heartRate),
+    bp: normalizeOptionalString(vitals.bp ?? vitals.blood_pressure ?? vitals.bloodPressure),
+    temp: toFiniteNumber(vitals.temp ?? vitals.temperature),
+    o2: toFiniteNumber(vitals.o2 ?? vitals.o2_sat ?? vitals.oxygen_saturation ?? vitals.oxygenSaturation),
+    rr: toFiniteNumber(vitals.rr ?? vitals.respiratory_rate ?? vitals.respiratoryRate),
+    pain: toFiniteNumber(vitals.pain ?? vitals.pain_level ?? vitals.painLevel)
+  });
+}
+
+function normalizeInputMode(value) {
+  const normalized = normalizeOptionalString(value)?.toLowerCase();
+  return normalized === 'voice' || normalized === 'text' ? normalized : null;
+}
+
+function inferChiefComplaint(providedValue, context, conversationHistory) {
+  const direct = normalizeOptionalString(providedValue || context?.chiefComplaint || context?.chief_complaint);
+  if (direct) return direct;
+
+  const firstUserMessage = (Array.isArray(conversationHistory) ? conversationHistory : []).find(
+    (entry) => entry?.role === 'user' && normalizeOptionalString(entry?.content)
+  );
+
+  return normalizeOptionalString(firstUserMessage?.content);
+}
+
 function riskToPriority(urgencyLevel, riskScore) {
   const urgency = String(urgencyLevel || '').toUpperCase();
   if (urgency === 'CRITICAL') return 'CRITICAL';
@@ -126,12 +231,28 @@ async function resolveDepartmentId(departmentInput) {
 
 // New AI chat endpoint for mobile conversation flow.
 router.post('/chat-next', authenticateAny, async (req, res) => {
+  const traceId = req.headers['x-trace-id'] || buildTraceId('chatnext');
   try {
-    const conversationHistory = parseMaybeJson(req.body?.conversation_history, []);
+    const conversationHistory = normalizeConversationHistory(req.body?.conversation_history || req.body?.conversationHistory);
+    console.log('[TriageChatNext] start', {
+      traceId,
+      role: req.role,
+      resolvedUserId: req.userId || null,
+      historyLength: conversationHistory.length,
+      lastRole: conversationHistory.length ? conversationHistory[conversationHistory.length - 1]?.role || null : null
+    });
     const result = await getNextQuestions(conversationHistory);
+    console.log('[TriageChatNext] success', {
+      traceId,
+      questionCount: Array.isArray(result?.questions) ? result.questions.length : 0,
+      nextQuestionPreview: typeof result?.questions?.[0] === 'string' ? result.questions[0].slice(0, 120) : null
+    });
     return res.json(result);
   } catch (error) {
-    console.error('chat-next error:', error.response?.data || error.message);
+    console.error('[TriageChatNext] failed', {
+      traceId,
+      message: error?.response?.data || error?.message || 'unknown error'
+    });
     return res.status(500).json({
       error: 'Failed to fetch next triage questions',
       details: error.response?.data || error.message
@@ -148,11 +269,13 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
     // req.userId is set by authenticateAny to the resolved Patient._id (handles Google OAuth → Patient mapping).
     // Fall back to body fields only as a last resort.
     const patientId = req.userId || body.patient_id || body.patientId;
-    const conversationHistory = parseMaybeJson(body.conversation_history, []);
+    const conversationHistory = normalizeConversationHistory(body.conversation_history || body.conversationHistory);
     const context = parseMaybeJson(body.context, {});
-    const vitals = parseMaybeJson(body.vitals, {});
-    const availableDepartments = parseMaybeJson(body.available_departments, []);
-    const chiefComplaint = body.chief_complaint || context?.chiefComplaint || 'General consultation';
+    const aiVitals = normalizeVitalsForAi(body.vitals || body.vitalSigns);
+    const recordVitals = normalizeVitalsForRecord(body.vitals || body.vitalSigns);
+    const availableDepartments = normalizeAvailableDepartments(body.available_departments || body.availableDepartments);
+    const inputMode = normalizeInputMode(body.input_mode || body.inputMode || context?.input_mode || context?.inputMode);
+    const chiefComplaint = inferChiefComplaint(body.chief_complaint || body.chiefComplaint, context, conversationHistory) || 'General consultation';
 
     console.log('[TriageAnalyze] start', {
       traceId,
@@ -161,7 +284,18 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       bodyPatientId: body.patient_id || body.patientId || null,
       hasFile: Boolean(req.file?.buffer?.length),
       historyLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0,
-      availableDepartmentsCount: Array.isArray(availableDepartments) ? availableDepartments.length : 0
+      availableDepartmentsCount: Array.isArray(availableDepartments) ? availableDepartments.length : 0,
+      inputMode
+    });
+
+    console.log('[TriageAnalyze] normalized_payload', {
+      traceId,
+      chiefComplaint,
+      conversationHistoryLength: conversationHistory.length,
+      contextKeys: Object.keys(context || {}),
+      aiVitalsKeys: Object.keys(aiVitals || {}),
+      recordVitalsKeys: Object.keys(recordVitals || {}),
+      availableDepartmentsPreview: availableDepartments.slice(0, 5)
     });
 
     if (!patientId) {
@@ -179,7 +313,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       conversation_history: conversationHistory,
       available_departments: Array.isArray(availableDepartments) ? availableDepartments : [],
       context: context || {},
-      vitals: vitals || {}
+      vitals: aiVitals
     };
 
     const ai = await analyzeTriage(payload, req.file || null);
@@ -204,6 +338,14 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
     const requestedDepartmentId = body.department_id || body.departmentId || null;
     const departmentId = await resolveDepartmentId(requestedDepartmentId || departmentName);
     const hospitalId = body.hospital_id || body.hospitalId || null;
+
+    console.log('[TriageAnalyze] resolution', {
+      traceId,
+      requestedDepartmentId,
+      resolvedDepartmentId: departmentId || null,
+      aiDepartment: departmentName,
+      hospitalId
+    });
 
     const riskScore = Number(ai.risk_score ?? ai.riskScore ?? 0);
     const priorityLevel = riskToPriority(ai.urgency_level || ai.urgencyLevel, riskScore);
@@ -258,7 +400,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       priorityLevel,
       estimatedWaitMinutes: Number(ai.estimated_wait_minutes ?? ai.estimatedWaitMinutes ?? 0),
       redFlags: redFlagsResolved,
-      vitalSigns: vitals || {},
+      vitalSigns: recordVitals,
       recommendedSpecialty: departmentName,
       triageNotes: explainabilitySummary,
       historicalSummary,
@@ -268,6 +410,8 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       aiSeverity,
       aiAnalysis: rawAnalyzeOutput.ai_analysis || normalizedAiAnalysis,
       analyzeOutput: rawAnalyzeOutput,
+      inputMode,
+      conversationHistory,
       queuePosition: null
     });
     console.log('[TriageAnalyze] triage_record_saved', { traceId, triageRecordId: triageRecord._id });
@@ -289,6 +433,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       await triageRecord.save();
       console.log('[TriageAnalyze] queue_enqueue_done', {
         traceId,
+        queueEntryId: queueEntry?._id || null,
         queuePosition: queueEntry?.queuePosition || null,
         estimatedWaitMinutes: queueEntry?.estimatedWaitMinutes || null
       });
@@ -310,6 +455,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
         explainability_summary: triageRecord.triageNotes,
         historical_summary: triageRecord.historicalSummary,
         red_flags: triageRecord.redFlags,
+        input_mode: triageRecord.inputMode,
         ai_analysis: triageRecord.aiAnalysis,
         analyze_output: triageRecord.analyzeOutput
       },
@@ -698,6 +844,8 @@ router.get('/:triageId', authenticateAny, async (req, res) => {
       vitalSigns: triageRecord.vitalSigns,
       recommendedSpecialty: triageRecord.recommendedSpecialty,
       notes: triageRecord.triageNotes,
+      inputMode: triageRecord.inputMode,
+      conversationHistory: triageRecord.conversationHistory || [],
       createdAt: triageRecord.createdAt
     });
     

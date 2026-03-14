@@ -97,6 +97,9 @@ async function getNextQuestions(conversationHistory) {
   const payload = { conversation_history: normalizeHistory(conversationHistory) };
   console.log('[TriageService] chat-next request', {
     historyLength: payload.conversation_history.length,
+    lastRole: payload.conversation_history.length
+      ? payload.conversation_history[payload.conversation_history.length - 1]?.role || null
+      : null,
     aiCandidates: AI_BASE_CANDIDATES
   });
   const data = await postAiJson(['/api/v1/chat/next-questions', '/chat/next-questions'], payload);
@@ -177,7 +180,11 @@ async function analyzeTriage(payload, file) {
     aiCandidates: AI_BASE_CANDIDATES,
     hasFile: Boolean(file?.buffer?.length),
     historyLength,
-    patientId: payload?.patient_id || null
+    patientId: payload?.patient_id || null,
+    inputMode: payload?.input_mode || null,
+    contextKeys: Object.keys(payload?.context || {}),
+    vitalsKeys: Object.keys(payload?.vitals || {}),
+    availableDepartmentsCount: Array.isArray(payload?.available_departments) ? payload.available_departments.length : 0
   });
 
   try {
@@ -197,6 +204,11 @@ async function analyzeTriage(payload, file) {
         message: error?.message || 'unknown error'
       });
       const data = await postAiJson(['/api/v1/analyze-triage', '/analyze-triage'], payload || {});
+      console.log('[TriageService] analyze_json_fallback_success', {
+        riskScore: data?.risk_score ?? null,
+        urgency: data?.urgency_level ?? null,
+        department: data?.department ?? null
+      });
       return data;
     }
 

@@ -28,6 +28,7 @@ const COMORBIDITY_OPTIONS = ['Diabetes', 'Hypertension', 'Heart disease', 'Asthm
  */
 export default function TriageForm({ patientId, token, availableDepartments, departmentId, hospitalId, inputMode = 'text', mode, onComplete, onError }) {
   const [step, setStep] = useState('initial');
+  const [debugSessionId] = useState(() => `triage_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
 
   // Text-mode bootstrap
   const [problem, setProblem] = useState('');
@@ -57,8 +58,20 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
   async function askNextQuestion(baseHistory) {
     try {
       setAskingNext(true);
+      console.log('[TriageForm] ask_next_start', {
+        debugSessionId,
+        inputMode: normalizedInputMode,
+        historyLength: Array.isArray(baseHistory) ? baseHistory.length : 0
+      });
       const result = await triageChatNext(baseHistory);
       const nextQuestion = Array.isArray(result?.questions) ? result.questions[0] : null;
+
+      console.log('[TriageForm] ask_next_response', {
+        debugSessionId,
+        inputMode: normalizedInputMode,
+        questionCount: Array.isArray(result?.questions) ? result.questions.length : 0,
+        nextQuestionPreview: typeof nextQuestion === 'string' ? nextQuestion.slice(0, 120) : null
+      });
 
       if (!nextQuestion) {
         onError?.('No follow-up question returned by triage AI');
@@ -67,6 +80,11 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
       }
 
       if (nextQuestion === TRIAGE_COMPLETE_TOKEN) {
+        console.log('[TriageForm] triage_complete_token', {
+          debugSessionId,
+          inputMode: normalizedInputMode,
+          historyLength: Array.isArray(baseHistory) ? baseHistory.length : 0
+        });
         setStep('context');
         return;
       }
@@ -81,6 +99,11 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
 
       setStep(normalizedInputMode === 'voice' ? 'voice' : 'chat');
     } catch (error) {
+      console.log('[TriageForm] ask_next_error', {
+        debugSessionId,
+        inputMode: normalizedInputMode,
+        message: error?.message || 'unknown error'
+      });
       onError?.(error?.message || 'Could not fetch AI questions');
       setStep(normalizedInputMode === 'voice' ? 'voice' : 'initial');
     } finally {
@@ -95,8 +118,10 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
     setInitError('');
 
     console.log('[TriageForm] initial_submit', {
+      debugSessionId,
       patientId,
       mode,
+      inputMode: normalizedInputMode,
       departmentId: departmentId || null,
       hospitalId: hospitalId || null,
       availableDepartmentsCount: Array.isArray(availableDepartments) ? availableDepartments.length : 0
@@ -114,6 +139,10 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
   }
 
   function handleVoiceHistoryComplete(finalHistory) {
+    console.log('[TriageForm] voice_history_complete', {
+      debugSessionId,
+      historyLength: Array.isArray(finalHistory) ? finalHistory.length : 0
+    });
     setHistory(finalHistory || []);
     setStep('context');
   }
@@ -122,6 +151,12 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
   async function handleTextAnswerNext() {
     if (!currentAnswer.trim()) { setAnswerError('Please type your answer.'); return; }
     setAnswerError('');
+
+    console.log('[TriageForm] text_answer_submit', {
+      debugSessionId,
+      answerLength: currentAnswer.trim().length,
+      historyLength: history.length
+    });
 
     const updatedHistory = [
       ...history,
@@ -140,6 +175,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
       patient_id: patientId,
       department_id: departmentId || null,
       hospital_id: hospitalId || null,
+      input_mode: normalizedInputMode,
       conversation_history: history,
       available_departments: availableDepartments || [],
       context: {
@@ -160,15 +196,18 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
 
     try {
       console.log('[TriageForm] analyze_submit', {
+        debugSessionId,
         patientId,
         departmentId: payload.department_id,
         hospitalId: payload.hospital_id,
+        inputMode: normalizedInputMode,
         historyLength: payload.conversation_history.length,
         hasVitals: Object.values(payload.vitals || {}).some((v) => String(v || '').trim() !== ''),
         comorbidityCount: payload.context?.comorbidities?.length || 0
       });
       const result = await triageAnalyze(payload, token);
       console.log('[TriageForm] analyze_success', {
+        debugSessionId,
         durationMs: Date.now() - submitStartedAt,
         triageId: result?.triage?.id || null,
         riskScore: result?.triage?.risk_score ?? null,
@@ -179,6 +218,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
       onComplete?.(result);
     } catch (err) {
       console.log('[TriageForm] analyze_error', {
+        debugSessionId,
         durationMs: Date.now() - submitStartedAt,
         message: err?.message || 'unknown error'
       });

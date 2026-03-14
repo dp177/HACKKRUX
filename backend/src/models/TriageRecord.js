@@ -126,6 +126,25 @@ const triageRecordSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: null
   },
+  inputMode: {
+    type: String,
+    enum: ['text', 'voice'],
+    default: null
+  },
+  conversationHistory: {
+    type: [{
+      role: {
+        type: String,
+        enum: ['assistant', 'user', 'system'],
+        default: 'user'
+      },
+      content: {
+        type: String,
+        required: true
+      }
+    }],
+    default: []
+  },
 
   // Queue Information
   queuePosition: {

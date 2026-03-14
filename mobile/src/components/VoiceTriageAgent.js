@@ -15,9 +15,13 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
 
   const voiceRef = useRef(null);
   const ttsRef = useRef(null);
+  const ttsFinishSubscriptionRef = useRef(null);
+  const shouldResumeListeningRef = useRef(false);
+  const sessionIdRef = useRef(`voice_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
 
   useEffect(() => {
     let mounted = true;
+    console.log('[VoiceTriage] setup_start', { sessionId: sessionIdRef.current });
 
     async function setupVoiceModules() {
       try {
@@ -35,8 +39,32 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
         Voice.onSpeechResults = handleSpeechResults;
         Voice.onSpeechError = handleSpeechError;
 
+        console.log('[VoiceTriage] modules_ready', {
+          sessionId: sessionIdRef.current,
+          hasVoiceStart: Boolean(Voice?.start),
+          hasTtsSpeak: Boolean(Tts?.speak)
+        });
+
+        if (typeof Tts?.addEventListener === 'function') {
+          ttsFinishSubscriptionRef.current = Tts.addEventListener('tts-finish', () => {
+            console.log('[VoiceTriage] tts_finish', {
+              sessionId: sessionIdRef.current,
+              resumeListening: shouldResumeListeningRef.current
+            });
+            setSpeaking(false);
+            if (shouldResumeListeningRef.current) {
+              shouldResumeListeningRef.current = false;
+              startListening();
+            }
+          });
+        }
+
         setVoiceReady(true);
       } catch (error) {
+        console.log('[VoiceTriage] setup_error', {
+          sessionId: sessionIdRef.current,
+          message: error?.message || 'unknown error'
+        });
         setVoiceReady(false);
         onError?.('Voice mode requires a development build with @react-native-voice/voice and react-native-tts installed.');
       }
@@ -46,6 +74,7 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
 
     return () => {
       mounted = false;
+      console.log('[VoiceTriage] cleanup_start', { sessionId: sessionIdRef.current });
       cleanupVoice();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -54,6 +83,14 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
   async function cleanupVoice() {
     const Voice = voiceRef.current;
     const Tts = ttsRef.current;
+    shouldResumeListeningRef.current = false;
+
+    try {
+      ttsFinishSubscriptionRef.current?.remove?.();
+      ttsFinishSubscriptionRef.current = null;
+    } catch {
+      // ignore cleanup errors
+    }
 
     try {
       if (Voice?.stop) await Voice.stop();
@@ -68,6 +105,8 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
     } catch {
       // ignore cleanup errors
     }
+
+    console.log('[VoiceTriage] cleanup_done', { sessionId: sessionIdRef.current });
   }
 
   async function speak(text) {
@@ -77,10 +116,19 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
     try {
       setSpeaking(true);
       setSubtitle(`AI: ${text}`);
+      console.log('[VoiceTriage] speak_start', {
+        sessionId: sessionIdRef.current,
+        textLength: String(text || '').length
+      });
       await Tts.stop?.();
       Tts.speak(text, { rate: 0.48, pitch: 1.0 });
-    } finally {
-      setTimeout(() => setSpeaking(false), 1000);
+    } catch (error) {
+      console.log('[VoiceTriage] speak_error', {
+        sessionId: sessionIdRef.current,
+        message: error?.message || 'unknown error'
+      });
+      setSpeaking(false);
+      throw error;
     }
   }
 
@@ -90,8 +138,13 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
 
     try {
       setListening(true);
+      console.log('[VoiceTriage] listening_start', { sessionId: sessionIdRef.current });
       await Voice.start('en-US');
     } catch (error) {
+      console.log('[VoiceTriage] listening_error', {
+        sessionId: sessionIdRef.current,
+        message: error?.message || 'unknown error'
+      });
       setListening(false);
       onError?.(error?.message || 'Failed to start listening');
     }
@@ -106,6 +159,7 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
     } catch {
       // ignore stop failures
     } finally {
+      console.log('[VoiceTriage] listening_stop', { sessionId: sessionIdRef.current });
       setListening(false);
     }
   }
@@ -113,8 +167,18 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
   async function askNextQuestion(history) {
     try {
       setBusy(true);
+      console.log('[VoiceTriage] ask_next_start', {
+        sessionId: sessionIdRef.current,
+        historyLength: Array.isArray(history) ? history.length : 0
+      });
       const data = await triageChatNext(history);
       const nextQuestion = Array.isArray(data?.questions) ? data.questions[0] : null;
+
+      console.log('[VoiceTriage] ask_next_response', {
+        sessionId: sessionIdRef.current,
+        questionCount: Array.isArray(data?.questions) ? data.questions.length : 0,
+        nextQuestionPreview: typeof nextQuestion === 'string' ? nextQuestion.slice(0, 120) : null
+      });
 
       if (!nextQuestion) {
         onError?.('No follow-up question returned by triage AI');
@@ -122,6 +186,10 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
       }
 
       if (nextQuestion === TRIAGE_COMPLETE_TOKEN) {
+        console.log('[VoiceTriage] triage_complete_token', {
+          sessionId: sessionIdRef.current,
+          historyLength: Array.isArray(history) ? history.length : 0
+        });
         await stopListening();
         await speak('Thank you. I have all the information I need. Calculating your priority now.');
         onComplete?.(history);
@@ -130,12 +198,14 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
 
       const withAssistant = [...history, { role: 'assistant', content: nextQuestion }];
       setConversation(withAssistant);
+      shouldResumeListeningRef.current = true;
       await speak(nextQuestion);
-
-      setTimeout(() => {
-        startListening();
-      }, 1400);
     } catch (error) {
+      shouldResumeListeningRef.current = false;
+      console.log('[VoiceTriage] ask_next_error', {
+        sessionId: sessionIdRef.current,
+        message: error?.message || 'unknown error'
+      });
       onError?.(error?.message || 'Voice triage failed while fetching next question');
     } finally {
       setBusy(false);
@@ -145,9 +215,16 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
   async function handleSpeechResults(event) {
     const spoken = Array.isArray(event?.value) ? event.value[0] : '';
     const userText = String(spoken || '').trim();
+    console.log('[VoiceTriage] speech_result', {
+      sessionId: sessionIdRef.current,
+      alternatives: Array.isArray(event?.value) ? event.value.length : 0,
+      transcriptPreview: userText.slice(0, 120)
+    });
     setListening(false);
 
     if (!userText) {
+      shouldResumeListeningRef.current = false;
+      console.log('[VoiceTriage] empty_speech_retry', { sessionId: sessionIdRef.current });
       setTimeout(startListening, 600);
       return;
     }
@@ -162,10 +239,20 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
   function handleSpeechError(event) {
     setListening(false);
     const message = event?.error?.message || 'Voice recognition error';
+    console.log('[VoiceTriage] speech_error', {
+      sessionId: sessionIdRef.current,
+      message,
+      raw: event?.error || null
+    });
     onError?.(message);
   }
 
   async function handleStartVoiceFlow() {
+    console.log('[VoiceTriage] start_requested', {
+      sessionId: sessionIdRef.current,
+      voiceReady,
+      busy
+    });
     if (!voiceReady || busy) return;
     const seedHistory = [];
     setConversation(seedHistory);
