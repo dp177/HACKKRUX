@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, DeviceEventEmitter, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { io } from 'socket.io-client';
-import { getCurrentUser, getPatientDashboard } from '../../api';
+import { getMyQueueStatus } from '../../api';
 import { useAuthStore } from '../../store/authStore';
 import { usePatientFlowStore } from '../../store/patientFlowStore';
 import { colors, radii, spacing } from '../../theme/tokens';
@@ -24,12 +24,20 @@ export default function QueueScreen() {
       if (!token) return;
       try {
         console.log('[QueueScreen] load_start');
-        const me = await getCurrentUser(token);
-        const dashboard = await getPatientDashboard(me.user.id, token);
+        const status = await getMyQueueStatus(token);
 
         if (!alive) return;
-        const latest = dashboard?.recentTriageAssessments?.[0] || null;
-        const merged = activeQueue ? { ...latest, ...activeQueue } : latest;
+        const merged = {
+          ...(activeQueue || {}),
+          queuePosition: status?.tokenNumber ?? status?.position ?? activeQueue?.queuePosition ?? null,
+          tokenNumber: status?.tokenNumber ?? status?.position ?? null,
+          patientsAhead: status?.patientsAhead ?? null,
+          estimatedWaitMinutes: status?.estimatedWaitMinutes ?? activeQueue?.estimatedWaitMinutes ?? null,
+          priorityLevel: status?.priorityLevel || activeQueue?.priorityLevel,
+          riskScore: status?.riskScore ?? activeQueue?.riskScore,
+          departmentId: status?.departmentId || activeQueue?.departmentId,
+          hospitalId: status?.hospitalId || activeQueue?.hospitalId
+        };
         setQueueData(merged);
         console.log('[QueueScreen] latest_triage_loaded', {
           hasLatest: Boolean(merged),
@@ -45,7 +53,10 @@ export default function QueueScreen() {
 
           socket.on('connect', () => {
             console.log('[QueueScreen] socket_connected');
-            socket.emit('queue:subscribe', { userId: me.user.id });
+            socket.emit('queue:subscribe', {
+              patientId: status?.patientId,
+              departmentId: status?.departmentId
+            });
           });
 
           socket.on('queue:update', (payload) => {
@@ -95,7 +106,10 @@ export default function QueueScreen() {
           <Text style={styles.value}>{queueData.departmentName || 'Not available'}</Text>
 
           <Text style={styles.label}>Queue Position</Text>
-          <Text style={styles.value}>{queueData.queuePosition ?? '-'}</Text>
+          <Text style={styles.value}>{queueData.tokenNumber ?? queueData.queuePosition ?? '-'}</Text>
+
+          <Text style={styles.label}>Patients Ahead</Text>
+          <Text style={styles.value}>{queueData.patientsAhead ?? '-'}</Text>
 
           <Text style={styles.label}>Estimated Wait</Text>
           <Text style={styles.value}>{queueData.estimatedWaitMinutes != null ? `${queueData.estimatedWaitMinutes} min` : '-'}</Text>

@@ -11,6 +11,11 @@ const queueSchema = new mongoose.Schema({
     ref: 'Patient',
     required: true
   },
+  hospitalId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Hospital',
+    default: null
+  },
   triageRecordId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'TriageRecord',
@@ -22,15 +27,30 @@ const queueSchema = new mongoose.Schema({
     default: null
   },
 
+  riskScore: {
+    type: Number,
+    default: 0
+  },
+  urgencyLevel: {
+    type: String,
+    enum: ['CRITICAL', 'HIGH', 'MODERATE', 'LOW', 'ROUTINE'],
+    default: 'ROUTINE'
+  },
+  priorityScore: {
+    type: Number,
+    default: 0
+  },
+
   // Queue Position and Status
   queuePosition: {
     type: Number,
-    required: true
+    required: true,
+    default: 1
   },
   status: {
     type: String,
-    enum: ['waiting', 'called', 'in-session', 'completed', 'cancelled'],
-    default: 'waiting'
+    enum: ['WAITING', 'IN_CONSULTATION', 'COMPLETED', 'CANCELLED'],
+    default: 'WAITING'
   },
   priorityLevel: {
     type: String,
@@ -39,10 +59,14 @@ const queueSchema = new mongoose.Schema({
   },
 
   // Times
-  arrivedAt: {
+  joinedAt: {
     type: Date,
     required: true,
     default: Date.now
+  },
+  arrivedAt: {
+    type: Date,
+    default: null
   },
   calledAt: {
     type: Date,
@@ -72,5 +96,7 @@ queueSchema.index({ patientId: 1 });
 queueSchema.index({ departmentId: 1 });
 queueSchema.index({ status: 1 });
 queueSchema.index({ queuePosition: 1 });
+queueSchema.index({ departmentId: 1, status: 1, priorityScore: -1, joinedAt: 1 });
+queueSchema.index({ hospitalId: 1, departmentId: 1, status: 1 });
 
 module.exports = mongoose.model('Queue', queueSchema);

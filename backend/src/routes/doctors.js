@@ -11,6 +11,7 @@ const {
   Visit,
   VitalSignRecord,
   TriageRecord,
+  Queue,
   Appointment,
   DoctorSchedule,
   DoctorBreak,
@@ -20,6 +21,7 @@ const { authenticateDoctor } = require('../middleware/auth');
 const axios = require('axios');
 const { assertWithinNextWeek, generateSlots, overlaps, parseMinutes } = require('../utils/scheduling');
 const { getSocketServer } = require('../utils/socketServer');
+const { callNextFromDepartmentQueue, recalculateDepartmentQueue } = require('../services/queueService');
 
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001';
 
@@ -139,11 +141,38 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
     .populate('patientId')
     .sort({ scheduledDate: 1, scheduledTime: 1 });
     
-    // Get current queue from Python triage engine
+    // Get current department queue from Mongo (department-level, not doctor-specific)
     let queueData = { queue: [], statistics: {} };
     try {
-      const queueResponse = await axios.get(`${TRIAGE_ENGINE_URL}/api/queue/clinic/current`);
-      queueData = queueResponse.data;
+      if (doctor.departmentId) {
+        await recalculateDepartmentQueue(doctor.departmentId);
+        const waiting = await Queue.find({ departmentId: doctor.departmentId, status: 'WAITING' })
+          .populate('patientId', 'firstName lastName')
+          .populate('triageRecordId', 'chiefComplaint')
+          .sort({ queuePosition: 1 });
+
+        const avgWait = waiting.length
+          ? Math.round(waiting.reduce((sum, row) => sum + Number(row.estimatedWaitMinutes || 0), 0) / waiting.length)
+          : 0;
+
+        queueData = {
+          queue: waiting.map((row) => ({
+            queue_entry_id: row.id,
+            patient_id: row.patientId?._id || row.patientId,
+            patient_name: row.patientId ? `${row.patientId.firstName} ${row.patientId.lastName}` : 'Patient',
+            chief_complaint: row.triageRecordId?.chiefComplaint || 'General consultation',
+            priority_level: row.priorityLevel,
+            urgency_level: row.urgencyLevel,
+            total_risk_score: row.riskScore,
+            wait_minutes: row.estimatedWaitMinutes,
+            queue_position: row.queuePosition
+          })),
+          statistics: {
+            waiting_count: waiting.length,
+            avg_wait_minutes: avgWait
+          }
+        };
+      }
     } catch (error) {
       console.error('Error fetching queue:', error.message);
     }
@@ -377,18 +406,22 @@ router.get('/:doctorId/patient-preview/:patientId', authenticateDoctor, async (r
 
 router.post('/:doctorId/call-next', authenticateDoctor, async (req, res) => {
   try {
-    // Call Python triage engine to get next patient
-    const response = await axios.post(`${TRIAGE_ENGINE_URL}/api/queue/next`);
-    
-    if (!response.data.patient_id) {
+    const { doctorId } = req.params;
+    if (!ensureDoctorAccess(req, doctorId)) {
+      return res.status(403).json({ error: 'You can only call next for your own queue' });
+    }
+
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+
+    const queueEntry = await callNextFromDepartmentQueue(doctor.departmentId);
+    if (!queueEntry) {
       return res.json({ message: 'No patients waiting in queue' });
     }
-    
-    const nextPatientId = response.data.patient_id;
-    
-    // Get patient details from database
-    const patient = await Patient.findById(nextPatientId);
-    
+
+    const patient = await Patient.findById(queueEntry.patientId);
     if (!patient) {
       return res.status(404).json({ error: 'Patient not found in database' });
     }
@@ -399,8 +432,8 @@ router.post('/:doctorId/call-next', authenticateDoctor, async (req, res) => {
         id: patient.id,
         name: `${patient.firstName} ${patient.lastName}`,
         age: Math.floor((new Date() - new Date(patient.dateOfBirth)) / 31557600000),
-        chiefComplaint: response.data.chief_complaint,
-        priority: response.data.priority
+        chiefComplaint: 'Please review latest triage notes',
+        priority: queueEntry.priorityLevel
       }
     });
     

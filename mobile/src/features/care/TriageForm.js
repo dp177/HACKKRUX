@@ -24,9 +24,9 @@ const COMORBIDITY_OPTIONS = ['Diabetes', 'Hypertension', 'Heart disease', 'Asthm
  *   5. 'submitting' — analyze triage
  *
  * Props:
- *   patientId, token, availableDepartments[], mode, onComplete(result), onError(msg)
+ *   patientId, token, availableDepartments[], departmentId, hospitalId, mode, onComplete(result), onError(msg)
  */
-export default function TriageForm({ patientId, token, availableDepartments, mode, onComplete, onError }) {
+export default function TriageForm({ patientId, token, availableDepartments, departmentId, hospitalId, mode, onComplete, onError }) {
   const [step, setStep] = useState('initial');
 
   // Step 1
@@ -109,6 +109,8 @@ export default function TriageForm({ patientId, token, availableDepartments, mod
     setStep('submitting');
     const payload = {
       patient_id: patientId,
+      department_id: departmentId || null,
+      hospital_id: hospitalId || null,
       conversation_history: history,
       available_departments: availableDepartments || [],
       context: {

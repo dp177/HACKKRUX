@@ -38,6 +38,24 @@ io.on('connection', (socket) => {
     if (!doctorId || !date) return;
     socket.leave(`doctor:${doctorId}:slots:${date}`);
   });
+
+  socket.on('queue:subscribe', ({ patientId, departmentId }) => {
+    if (patientId) {
+      socket.join(`patient:${patientId}`);
+    }
+    if (departmentId) {
+      socket.join(`department:${departmentId}`);
+    }
+  });
+
+  socket.on('queue:unsubscribe', ({ patientId, departmentId }) => {
+    if (patientId) {
+      socket.leave(`patient:${patientId}`);
+    }
+    if (departmentId) {
+      socket.leave(`department:${departmentId}`);
+    }
+  });
 });
 const PORT = process.env.PORT || 5000;
 
@@ -98,6 +116,7 @@ app.use('/api/appointments', require('./routes/appointments'));
 
 // Triage integration routes (calls Python engine)
 app.use('/api/triage', require('./routes/triage'));
+app.use('/api/v1/triage', require('./routes/triage'));
 
 // Visit/medical records routes
 app.use('/api/visits', require('./routes/visits'));
@@ -110,6 +129,10 @@ app.use('/api/hospitals', require('./routes/hospitals'));
 
 // Walk-in routes (self check-in + receptionist assisted)
 app.use('/api/walkins', require('./routes/walkins'));
+
+// Department queue routes (patient + doctor live queue status)
+app.use('/api/queue', require('./routes/queue'));
+app.use('/api/v1/queue', require('./routes/queue'));
 
 // WhatsApp booking webhook route (Twilio)
 app.use('/api/v1', require('./routes/whatsapp'));

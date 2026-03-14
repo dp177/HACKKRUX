@@ -106,7 +106,7 @@ export async function submitHospitalOnboardingRequest(payload) {
  * @param {string} token
  */
 export async function triageChatNext(conversationHistory, token) {
-  return request('/triage/chat-next', {
+  return request('/v1/triage/chat-next', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ conversation_history: conversationHistory })
@@ -119,7 +119,7 @@ export async function triageChatNext(conversationHistory, token) {
  * @param {string} token
  */
 export async function triageAnalyze(payload, token) {
-  return request('/triage/analyze', {
+  return request('/v1/triage/analyze', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(payload)
@@ -132,7 +132,7 @@ export async function triageAnalyze(payload, token) {
  * @param {string} token
  */
 export async function triageRescoreBatch(patients, token) {
-  return request('/triage/rescore-batch', {
+  return request('/v1/triage/rescore-batch', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ patients })
@@ -144,7 +144,7 @@ export async function triageRescoreBatch(patients, token) {
  * @param {string} token
  */
 export async function getClinicQueue(token) {
-  return request('/triage/queue/clinic', {
+  return request('/v1/triage/queue/clinic', {
     headers: { Authorization: `Bearer ${token}` }
   });
 }
@@ -155,7 +155,7 @@ export async function getClinicQueue(token) {
  * @param {string} token
  */
 export async function getPatientQueueStatus(patientId, token) {
-  return request(`/triage/queue/patient/${encodeURIComponent(patientId)}/status`, {
+  return request(`/v1/queue/patient/${encodeURIComponent(patientId)}/status`, {
     headers: { Authorization: `Bearer ${token}` }
   });
 }

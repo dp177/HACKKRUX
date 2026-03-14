@@ -70,7 +70,7 @@ export function getPatientDashboard(patientId, token) {
 }
 
 export function submitQuickTriage(payload, token) {
-  return request('/triage/complete-single', {
+  return request('/v1/triage/complete-single', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(payload)
@@ -367,7 +367,7 @@ export function getDoctorSlotsForDate(doctorId, date) {
 }
 
 export function submitCompleteSingleTriage(payload) {
-  return request('/triage/complete-single', {
+  return request('/v1/triage/complete-single', {
     method: 'POST',
     body: JSON.stringify(payload)
   });
@@ -453,48 +453,42 @@ export async function triageChatNext(conversationHistory) {
  * Returns the standard { triage, queue, aiRaw } shape the app expects.
  */
 export async function triageAnalyze(payload, token, file = null) {
-  // HuggingFace expects multipart/form-data with 'payload' as a stringified JSON string
-  const formData = new FormData();
-  formData.append('payload', JSON.stringify(payload));
   if (file) {
+    const formData = new FormData();
+    Object.entries(payload || {}).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      if (typeof value === 'object') {
+        formData.append(key, JSON.stringify(value));
+      } else {
+        formData.append(key, String(value));
+      }
+    });
+
     formData.append('file', {
       uri: file.uri,
       name: file.name || 'medical_record',
       type: file.type || 'application/octet-stream'
     });
+
+    const response = await fetch(`${API_BASE_URL}/v1/triage/analyze`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData
+    });
+
+    let data = null;
+    try { data = await response.json(); } catch { data = null; }
+    if (!response.ok) {
+      throw new Error(data?.error || `Request failed: ${response.status}`);
+    }
+    return data;
   }
 
-  // Do NOT set Content-Type — let fetch set it automatically with the correct boundary
-  const response = await fetch(`${TRIAGE_AI_BASE}/api/v1/analyze-triage`, {
+  return request('/v1/triage/analyze', {
     method: 'POST',
-    body: formData
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
   });
-
-  let ai = null;
-  try { ai = await response.json(); } catch { ai = null; }
-
-  if (!response.ok) {
-    const msg = ai?.detail?.[0]?.msg || ai?.error || `analyze-triage failed: ${response.status}`;
-    throw new Error(msg);
-  }
-
-  // Map flat HuggingFace response → { triage, queue } shape used by handleTriageComplete
-  return {
-    triage: {
-      id: null,
-      risk_score: ai.risk_score,
-      urgency_level: ai.urgency_level,
-      department: ai.department || ai.ai_analysis?.department,
-      explainability_summary: ai.explainability_summary,
-      historical_summary: ai.historical_summary,
-      red_flags: ai.ai_analysis?.detected_red_flags || []
-    },
-    queue: {
-      queuePosition: null,
-      estimatedWaitMinutes: null
-    },
-    aiRaw: ai
-  };
 }
 
 
@@ -507,7 +501,7 @@ export async function triageAnalyze(payload, token, file = null) {
  * @returns {Promise<{ results: Array<{patient_id:string, risk_score:number, urgency_level:string, message:string}> }>}
  */
 export function triageRescoreBatch(patients, token) {
-  return request('/triage/rescore-batch', {
+  return request('/v1/triage/rescore-batch', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ patients })
@@ -522,7 +516,13 @@ export function triageRescoreBatch(patients, token) {
  * @returns {Promise<{ position: number, estimatedWaitMinutes: number, priority: string }>}
  */
 export function getPatientQueueStatus(patientId, token) {
-  return request(`/triage/queue/patient/${encodeURIComponent(patientId)}/status`, {
+  return request(`/v1/queue/patient/${encodeURIComponent(patientId)}/status`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export function getMyQueueStatus(token) {
+  return request('/v1/queue/my-status', {
     headers: { Authorization: `Bearer ${token}` }
   });
 }

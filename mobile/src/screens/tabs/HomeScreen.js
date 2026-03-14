@@ -766,6 +766,8 @@ export default function HomeScreen() {
             patientId={user?.id}
             token={token}
             availableDepartments={hospitalDepartments.map((d) => d.name).filter(Boolean)}
+            departmentId={selectedDepartment?.id || null}
+            hospitalId={selectedHospital?.id || null}
             mode={flowMode}
             onComplete={handleTriageComplete}
             onError={(msg) => Alert.alert('Triage Error', msg)}

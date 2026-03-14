@@ -7,9 +7,15 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const multer = require('multer');
-const { TriageRecord, Patient, Doctor, Department } = require('../models');
-const { authenticateAny, authenticateDoctor } = require('../middleware/auth');
+const { TriageRecord, Patient, Doctor, Department, Queue } = require('../models');
+const { authenticateAny, authenticateDoctor, authenticatePatient } = require('../middleware/auth');
 const { getNextQuestions, analyzeTriage, rescoreBatch, TRIAGE_AI_URL } = require('../services/triageService');
+const {
+  enqueuePatientToDepartmentQueue,
+  getPatientQueueStatus,
+  runRescoreForAllDepartments,
+  recalculateDepartmentQueue
+} = require('../services/queueService');
 
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
@@ -43,8 +49,12 @@ async function resolveDepartmentId(departmentInput) {
   if (!departmentInput) return null;
 
   const asId = String(departmentInput);
-  const byId = await Department.findById(asId).select('_id');
-  if (byId?._id) return byId._id;
+  try {
+    const byId = await Department.findById(asId).select('_id');
+    if (byId?._id) return byId._id;
+  } catch {
+    // Ignore cast errors and continue with name-based lookup.
+  }
 
   const byName = await Department.findOne({ name: new RegExp(`^${asId}$`, 'i') }).select('_id');
   return byName?._id || null;
@@ -98,13 +108,9 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
     const ai = await analyzeTriage(payload, req.file || null);
 
     const departmentName = ai.department || ai.recommended_department || null;
-    const departmentId = await resolveDepartmentId(departmentName);
-
-    const queueCount = await TriageRecord.countDocuments({
-      departmentId: departmentId || null,
-      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-      queuePosition: { $ne: null }
-    });
+    const requestedDepartmentId = body.department_id || body.departmentId || null;
+    const departmentId = await resolveDepartmentId(requestedDepartmentId || departmentName);
+    const hospitalId = body.hospital_id || body.hospitalId || null;
 
     const riskScore = Number(ai.risk_score ?? ai.riskScore ?? 0);
     const priorityLevel = riskToPriority(ai.urgency_level || ai.urgencyLevel, riskScore);
@@ -126,8 +132,24 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       vitalSigns: vitals || {},
       recommendedSpecialty: departmentName,
       triageNotes: ai.explainability_summary || ai.summary || null,
-      queuePosition: queueCount + 1
+      queuePosition: null
     });
+
+    let queueEntry = null;
+    if (departmentId) {
+      queueEntry = await enqueuePatientToDepartmentQueue({
+        patientId,
+        triageRecordId: triageRecord._id,
+        departmentId,
+        hospitalId,
+        riskScore,
+        urgencyLevel: priorityLevel
+      });
+
+      triageRecord.queuePosition = queueEntry?.queuePosition || null;
+      triageRecord.estimatedWaitMinutes = queueEntry?.estimatedWaitMinutes || triageRecord.estimatedWaitMinutes;
+      await triageRecord.save();
+    }
 
     return res.json({
       triage: {
@@ -139,8 +161,11 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
         red_flags: triageRecord.redFlags
       },
       queue: {
-        queuePosition: triageRecord.queuePosition,
-        estimatedWaitMinutes: triageRecord.estimatedWaitMinutes
+        tokenNumber: queueEntry?.queuePosition || null,
+        queuePosition: queueEntry?.queuePosition || null,
+        patientsAhead: queueEntry?.queuePosition ? Math.max(0, queueEntry.queuePosition - 1) : null,
+        estimatedWaitMinutes: queueEntry?.estimatedWaitMinutes ?? triageRecord.estimatedWaitMinutes,
+        status: queueEntry?.status || null
       },
       aiRaw: ai
     });
@@ -156,45 +181,12 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
 // Manual queue rescoring endpoint (scheduler uses same AI API).
 router.post('/rescore-batch', authenticateDoctor, async (req, res) => {
   try {
-    const providedPatients = parseMaybeJson(req.body?.patients, null);
-
-    const patients = Array.isArray(providedPatients)
-      ? providedPatients
-      : (await TriageRecord.find({ queuePosition: { $ne: null } })
-          .sort({ createdAt: 1 })
-          .limit(100)
-          .select('_id patientId totalRiskScore priorityLevel chiefComplaint createdAt'))
-          .map((row) => ({
-            triage_id: String(row._id),
-            patient_id: String(row.patientId),
-            risk_score: Number(row.totalRiskScore || 0),
-            waiting_minutes: Math.max(0, Math.floor((Date.now() - new Date(row.createdAt).getTime()) / 60000)),
-            priority_level: row.priorityLevel,
-            chief_complaint: row.chiefComplaint
-          }));
-
-    const result = await rescoreBatch(patients);
-    const updates = Array.isArray(result?.results) ? result.results : [];
-
-    let updated = 0;
-    for (const row of updates) {
-      const triageId = row?.triage_id || row?.triageId;
-      const newScore = Number(row?.risk_score ?? row?.new_risk_score ?? row?.updated_risk_score);
-      if (!triageId || Number.isNaN(newScore)) continue;
-
-      await TriageRecord.findByIdAndUpdate(triageId, {
-        totalRiskScore: newScore,
-        priorityLevel: riskToPriority(row?.urgency_level, newScore)
-      });
-      updated += 1;
-    }
+    const summary = await runRescoreForAllDepartments();
 
     return res.json({
       message: 'Rescore complete',
       aiUrl: TRIAGE_AI_URL,
-      scanned: patients.length,
-      updated,
-      result
+      ...summary
     });
   } catch (error) {
     console.error('triage rescore-batch error:', error.response?.data || error.message);
@@ -557,10 +549,37 @@ router.get('/:triageId', authenticateAny, async (req, res) => {
 
 router.get('/queue/clinic', authenticateDoctor, async (req, res) => {
   try {
-    // Get queue from Python engine
-    const queueResponse = await axios.get(`${TRIAGE_ENGINE_URL}/api/queue/clinic/current`);
-    
-    res.json(queueResponse.data);
+    const departmentId = req.doctor?.departmentId;
+    if (!departmentId) {
+      return res.json({ queue: [], statistics: { waiting_count: 0, avg_wait_minutes: 0 } });
+    }
+
+    const waiting = await Queue.find({ departmentId, status: 'WAITING' })
+      .populate('patientId', 'firstName lastName')
+      .sort({ queuePosition: 1 });
+
+    const avgWait = waiting.length
+      ? Math.round(waiting.reduce((sum, row) => sum + Number(row.estimatedWaitMinutes || 0), 0) / waiting.length)
+      : 0;
+
+    return res.json({
+      queue: waiting.map((row) => ({
+        queue_entry_id: row.id,
+        patient_id: row.patientId?._id || row.patientId,
+        patient_name: row.patientId ? `${row.patientId.firstName} ${row.patientId.lastName}` : 'Patient',
+        queue_position: row.queuePosition,
+        wait_minutes: row.estimatedWaitMinutes,
+        risk_score: row.riskScore,
+        priority_level: row.priorityLevel,
+        urgency_level: row.urgencyLevel,
+        joined_at: row.joinedAt,
+        status: row.status
+      })),
+      statistics: {
+        waiting_count: waiting.length,
+        avg_wait_minutes: avgWait
+      }
+    });
     
   } catch (error) {
     console.error('Error fetching clinic queue:', error);
@@ -575,13 +594,30 @@ router.get('/queue/clinic', authenticateDoctor, async (req, res) => {
 router.get('/queue/hospital/:department', authenticateDoctor, async (req, res) => {
   try {
     const { department } = req.params;
-    
-    // Get queue from Python engine
-    const queueResponse = await axios.get(
-      `${TRIAGE_ENGINE_URL}/api/queue/hospital/current/${department}`
-    );
-    
-    res.json(queueResponse.data);
+    const departmentId = await resolveDepartmentId(department);
+    if (!departmentId) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
+    await recalculateDepartmentQueue(departmentId);
+    const waiting = await Queue.find({ departmentId, status: 'WAITING' })
+      .populate('patientId', 'firstName lastName')
+      .sort({ queuePosition: 1 });
+
+    return res.json({
+      queue: waiting.map((row) => ({
+        queue_entry_id: row.id,
+        patient_id: row.patientId?._id || row.patientId,
+        patient_name: row.patientId ? `${row.patientId.firstName} ${row.patientId.lastName}` : 'Patient',
+        queue_position: row.queuePosition,
+        wait_minutes: row.estimatedWaitMinutes,
+        risk_score: row.riskScore,
+        priority_level: row.priorityLevel,
+        urgency_level: row.urgencyLevel,
+        joined_at: row.joinedAt,
+        status: row.status
+      }))
+    });
     
   } catch (error) {
     console.error('Error fetching hospital queue:', error);
@@ -593,20 +629,38 @@ router.get('/queue/hospital/:department', authenticateDoctor, async (req, res) =
 // GET PATIENT QUEUE STATUS (for patient to check their position)
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/queue/patient/:patientId/status', async (req, res) => {
+router.get('/queue/patient/:patientId/status', authenticateAny, async (req, res) => {
   try {
     const { patientId } = req.params;
-    
-    // Get status from Python engine
-    const statusResponse = await axios.get(
-      `${TRIAGE_ENGINE_URL}/api/queue/${patientId}/status`
-    );
-    
-    res.json(statusResponse.data);
+
+    if (req.role !== 'doctor' && String(req.userId) !== String(patientId)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const status = await getPatientQueueStatus(patientId);
+    if (!status) {
+      return res.status(404).json({ error: 'No active queue entry found' });
+    }
+
+    return res.json(status);
     
   } catch (error) {
     console.error('Error fetching queue status:', error);
     res.status(500).json({ error: 'Failed to fetch queue status' });
+  }
+});
+
+router.get('/queue/my-status', authenticatePatient, async (req, res) => {
+  try {
+    const status = await getPatientQueueStatus(req.userId);
+    if (!status) {
+      return res.status(404).json({ error: 'No active queue entry found' });
+    }
+
+    return res.json(status);
+  } catch (error) {
+    console.error('Error fetching my queue status:', error);
+    return res.status(500).json({ error: 'Failed to fetch queue status' });
   }
 });
 
