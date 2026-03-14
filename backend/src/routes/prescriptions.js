@@ -8,6 +8,11 @@ const mongoose = require('mongoose');
 const router = express.Router();
 const { Prescription, Queue, Patient, Doctor } = require('../models');
 const { authenticateDoctor, authenticatePatient } = require('../middleware/auth');
+const {
+  buildPrescriptionHashPayload,
+  generatePrescriptionArtifacts,
+  generatePrescriptionHash
+} = require('../utils/prescriptionSecurity');
 
 function normalizeOptionalString(value) {
   if (value === undefined || value === null) return null;
@@ -67,20 +72,60 @@ router.post('/', authenticateDoctor, async (req, res) => {
       return res.status(409).json({ error: 'Prescription already exists for this consultation' });
     }
 
-    const medicines = normalizeMedicineArray(req.body?.medicines);
+    const [doctor, patient] = await Promise.all([
+      Doctor.findById(doctorId),
+      Patient.findById(queueEntry.patientId)
+    ]);
 
-    const prescription = await Prescription.create({
+    if (!doctor) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+
+    const medicines = normalizeMedicineArray(req.body?.medicines);
+    const form = {
+      diagnosis: normalizeOptionalString(req.body?.form?.diagnosis),
+      temperature: normalizeOptionalString(req.body?.form?.temperature),
+      bloodPressure: normalizeOptionalString(req.body?.form?.bloodPressure),
+      notes: normalizeOptionalString(req.body?.form?.notes)
+    };
+    const remarks = normalizeOptionalString(req.body?.remarks);
+    const createdAt = new Date();
+
+    const hashPayload = buildPrescriptionHashPayload({
       patientId: queueEntry.patientId,
       doctorId,
       consultationId: queueEntry._id,
-      form: {
-        diagnosis: normalizeOptionalString(req.body?.form?.diagnosis),
-        temperature: normalizeOptionalString(req.body?.form?.temperature),
-        bloodPressure: normalizeOptionalString(req.body?.form?.bloodPressure),
-        notes: normalizeOptionalString(req.body?.form?.notes)
-      },
+      form,
       medicines,
-      remarks: normalizeOptionalString(req.body?.remarks)
+      remarks,
+      createdAt
+    });
+
+    const draftPrescription = {
+      _id: new mongoose.Types.ObjectId(),
+      patientId: queueEntry.patientId,
+      doctorId,
+      consultationId: queueEntry._id,
+      form,
+      medicines,
+      remarks,
+      createdAt
+    };
+
+    const artifacts = await generatePrescriptionArtifacts({
+      hashPayload,
+      prescription: draftPrescription,
+      doctor,
+      patient
+    });
+
+    const prescription = await Prescription.create({
+      ...draftPrescription,
+      hash: artifacts.hash,
+      verificationUrl: artifacts.verificationUrl,
+      qrCodeDataUrl: artifacts.qrCodeDataUrl,
+      pdfDataUrl: artifacts.pdfDataUrl,
+      pdfFileName: `prescription-${String(draftPrescription._id)}.pdf`
     });
 
     queueEntry.status = 'COMPLETED';
@@ -89,7 +134,12 @@ router.post('/', authenticateDoctor, async (req, res) => {
 
     return res.status(201).json({
       message: 'Prescription created and consultation completed',
-      prescription
+      prescription,
+      verification: {
+        hash: prescription.hash,
+        verificationUrl: prescription.verificationUrl,
+        qrCodeDataUrl: prescription.qrCodeDataUrl
+      }
     });
   } catch (error) {
     console.error('Error creating prescription:', error);
@@ -114,6 +164,9 @@ router.get('/patient/:patientId', authenticateDoctor, async (req, res) => {
       date: item.createdAt,
       diagnosis: item?.form?.diagnosis || null,
       medicines: (item.medicines || []).map((m) => m.name).filter(Boolean),
+      hash: item.hash || null,
+      verificationUrl: item.verificationUrl || null,
+      hasPdf: Boolean(item.pdfDataUrl),
       doctorName: item?.doctorId
         ? `Dr. ${item.doctorId.firstName || ''} ${item.doctorId.lastName || ''}`.trim()
         : null,
@@ -149,6 +202,8 @@ router.get('/me', authenticatePatient, async (req, res) => {
         instructions: m?.instructions || null
       })).filter((m) => m.name),
       remarks: item?.remarks || null,
+      hash: item.hash || null,
+      verificationUrl: item.verificationUrl || null,
       doctorName: item?.doctorId
         ? `Dr. ${item.doctorId.firstName || ''} ${item.doctorId.lastName || ''}`.trim()
         : null
@@ -156,6 +211,141 @@ router.get('/me', authenticatePatient, async (req, res) => {
   } catch (error) {
     console.error('Error fetching own prescription history:', error);
     return res.status(500).json({ error: 'Failed to fetch prescription history' });
+  }
+});
+
+router.get('/verify/:hash', async (req, res) => {
+  try {
+    const { hash } = req.params;
+    const normalizedHash = String(hash || '').trim().toLowerCase();
+    if (!normalizedHash || !/^[a-f0-9]{64}$/.test(normalizedHash)) {
+      return res.status(400).json({
+        status: 'INVALID',
+        valid: false,
+        reason: 'Invalid verification hash format'
+      });
+    }
+
+    const prescription = await Prescription.findOne({ hash: normalizedHash })
+      .populate('patientId', 'firstName lastName dateOfBirth gender phone')
+      .populate('doctorId', 'firstName lastName specialty licenseNumber')
+      .lean();
+
+    if (!prescription) {
+      return res.status(404).json({
+        status: 'INVALID',
+        valid: false,
+        reason: 'Prescription record not found'
+      });
+    }
+
+    const payload = buildPrescriptionHashPayload({
+      patientId: prescription.patientId?._id || prescription.patientId,
+      doctorId: prescription.doctorId?._id || prescription.doctorId,
+      consultationId: prescription.consultationId,
+      form: prescription.form,
+      medicines: prescription.medicines,
+      remarks: prescription.remarks,
+      createdAt: prescription.createdAt
+    });
+    const recomputedHash = generatePrescriptionHash(payload);
+    const valid = recomputedHash === normalizedHash;
+
+    if (!valid) {
+      return res.status(409).json({
+        status: 'INVALID',
+        valid: false,
+        reason: 'Prescription integrity check failed'
+      });
+    }
+
+    const patientName = prescription?.patientId
+      ? `${prescription.patientId.firstName || ''} ${prescription.patientId.lastName || ''}`.trim()
+      : 'Patient';
+    const doctorName = prescription?.doctorId
+      ? `Dr. ${prescription.doctorId.firstName || ''} ${prescription.doctorId.lastName || ''}`.trim()
+      : 'Doctor';
+
+    return res.json({
+      status: 'VALID',
+      valid: true,
+      hash: normalizedHash,
+      issuedAt: prescription.createdAt,
+      verificationUrl: prescription.verificationUrl || null,
+      diagnosis: prescription?.form?.diagnosis || null,
+      doctor: {
+        name: doctorName,
+        specialty: prescription?.doctorId?.specialty || null,
+        licenseNumber: prescription?.doctorId?.licenseNumber || null
+      },
+      patient: {
+        name: patientName,
+        phone: prescription?.patientId?.phone || null,
+        gender: prescription?.patientId?.gender || null
+      }
+    });
+  } catch (error) {
+    console.error('Error verifying prescription:', error);
+    return res.status(500).json({
+      status: 'INVALID',
+      valid: false,
+      reason: 'Verification failed due to server error'
+    });
+  }
+});
+
+router.get('/consultation/:consultationId', authenticateDoctor, async (req, res) => {
+  try {
+    const { consultationId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(consultationId)) {
+      return res.status(400).json({ error: 'Invalid consultationId' });
+    }
+
+    const prescription = await Prescription.findOne({ consultationId }).lean();
+    if (!prescription) {
+      return res.status(404).json({ error: 'Prescription not found' });
+    }
+
+    return res.json(prescription);
+  } catch (error) {
+    console.error('Error fetching consultation prescription:', error);
+    return res.status(500).json({ error: 'Failed to fetch consultation prescription' });
+  }
+});
+
+router.get('/:prescriptionId/pdf', authenticateDoctor, async (req, res) => {
+  try {
+    const { prescriptionId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(prescriptionId)) {
+      return res.status(400).json({ error: 'Invalid prescriptionId' });
+    }
+
+    const prescription = await Prescription.findOne({
+      _id: prescriptionId,
+      doctorId: req.userId
+    })
+      .select('pdfDataUrl pdfFileName')
+      .lean();
+
+    if (!prescription) {
+      return res.status(404).json({ error: 'Prescription not found' });
+    }
+
+    const raw = String(prescription.pdfDataUrl || '');
+    const match = raw.match(/^data:application\/pdf;base64,(.+)$/);
+    if (!match) {
+      return res.status(404).json({ error: 'Prescription PDF is not available' });
+    }
+
+    const pdfBuffer = Buffer.from(match[1], 'base64');
+    const fileName = prescription.pdfFileName || `prescription-${prescriptionId}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('Error fetching prescription PDF:', error);
+    return res.status(500).json({ error: 'Failed to fetch prescription PDF' });
   }
 });
 
@@ -180,25 +370,6 @@ router.get('/:prescriptionId', authenticateDoctor, async (req, res) => {
   } catch (error) {
     console.error('Error fetching prescription:', error);
     return res.status(500).json({ error: 'Failed to fetch prescription' });
-  }
-});
-
-router.get('/consultation/:consultationId', authenticateDoctor, async (req, res) => {
-  try {
-    const { consultationId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(consultationId)) {
-      return res.status(400).json({ error: 'Invalid consultationId' });
-    }
-
-    const prescription = await Prescription.findOne({ consultationId }).lean();
-    if (!prescription) {
-      return res.status(404).json({ error: 'Prescription not found' });
-    }
-
-    return res.json(prescription);
-  } catch (error) {
-    console.error('Error fetching consultation prescription:', error);
-    return res.status(500).json({ error: 'Failed to fetch consultation prescription' });
   }
 });
 

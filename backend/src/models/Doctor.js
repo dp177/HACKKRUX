@@ -51,6 +51,18 @@ const doctorSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  signatureUrl: {
+    type: String,
+    default: null
+  },
+  signatureMimeType: {
+    type: String,
+    default: null
+  },
+  signatureUpdatedAt: {
+    type: Date,
+    default: null
+  },
 
   // Hospital/Clinic Association
   hospitalId: {

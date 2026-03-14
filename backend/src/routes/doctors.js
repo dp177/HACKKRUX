@@ -19,11 +19,26 @@ const {
 } = require('../models');
 const { authenticateDoctor } = require('../middleware/auth');
 const axios = require('axios');
+const multer = require('multer');
 const { assertWithinNextWeek, generateSlots, overlaps, parseMinutes } = require('../utils/scheduling');
 const { getSocketServer } = require('../utils/socketServer');
 const { callNextFromDepartmentQueue, endActiveConsultation, recalculateDepartmentQueue } = require('../services/queueService');
 
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001';
+
+const signatureUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 2 * 1024 * 1024
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+    if (!allowed.includes(String(file?.mimetype || '').toLowerCase())) {
+      return cb(new Error('Only PNG, JPEG, and WEBP signature files are allowed'));
+    }
+    return cb(null, true);
+  }
+});
 
 function localIsoDate(date = new Date()) {
   const y = date.getFullYear();
@@ -104,6 +119,43 @@ async function regenerateDoctorSlots({ doctor, date }) {
     slots: finalSlots
   };
 }
+
+// ══════════════════════════════════════════════════════════════════
+// DOCTOR SIGNATURE UPLOAD (one-time, reusable in prescriptions)
+// ═══════════════════════════════════════════════════════════════
+
+router.post('/upload-signature', authenticateDoctor, (req, res, next) => {
+  signatureUpload.single('signature')(req, res, (error) => {
+    if (error) {
+      return res.status(400).json({ error: error.message || 'Invalid signature upload' });
+    }
+    return next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'Signature image file is required (field name: signature)' });
+    }
+
+    const mimeType = String(req.file.mimetype || 'image/png').toLowerCase();
+    const signatureDataUrl = `data:${mimeType};base64,${req.file.buffer.toString('base64')}`;
+
+    await Doctor.findByIdAndUpdate(req.userId, {
+      signatureUrl: signatureDataUrl,
+      signatureMimeType: mimeType,
+      signatureUpdatedAt: new Date()
+    });
+
+    return res.json({
+      message: 'Signature uploaded successfully',
+      signatureUrl: signatureDataUrl,
+      signatureUpdatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error uploading doctor signature:', error);
+    return res.status(500).json({ error: 'Failed to upload doctor signature' });
+  }
+});
 
 // ══════════════════════════════════════════════════════════════════
 // DOCTOR DASHBOARD - Today's Schedule & Queue

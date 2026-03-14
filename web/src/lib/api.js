@@ -5,10 +5,11 @@ export function getHospitalQrDownloadUrl(hospitalId) {
 }
 
 async function request(path, options = {}) {
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...(options.headers || {})
     },
     cache: 'no-store'
@@ -177,6 +178,21 @@ export async function createPrescription(payload, token) {
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(payload)
   });
+}
+
+export async function uploadDoctorSignature(file, token) {
+  const formData = new FormData();
+  formData.append('signature', file);
+
+  return request('/doctors/upload-signature', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData
+  });
+}
+
+export async function verifyPrescriptionHash(hash) {
+  return request(`/prescriptions/verify/${encodeURIComponent(hash)}`);
 }
 
 export async function getDepartments() {

@@ -52,7 +52,8 @@ import {
   setDoctorSchedule,
   updateDoctorBreak,
   updateDoctorSlot,
-  createPrescription
+  createPrescription,
+  uploadDoctorSignature
 } from '../../lib/api';
 
 const NAV_ITEMS = [
@@ -377,6 +378,8 @@ export default function DoctorPortalPage() {
     treatedPatients: [],
     visits: []
   });
+  const [signatureFile, setSignatureFile] = useState(null);
+  const [signatureUploading, setSignatureUploading] = useState(false);
 
   const [loading, setLoading] = useState(true);
 
@@ -893,6 +896,29 @@ export default function DoctorPortalPage() {
     localStorage.removeItem('doctorPortalDoctor');
     toast.success('Signed out');
     router.push('/doctor-signin');
+  }
+
+  async function handleSignatureUpload() {
+    if (!signatureFile || !token) {
+      toast.warning('Please select a signature image first');
+      return;
+    }
+
+    try {
+      setSignatureUploading(true);
+      const response = await uploadDoctorSignature(signatureFile, token);
+      setProfile((prev) => ({
+        ...(prev || {}),
+        signatureUrl: response?.signatureUrl || prev?.signatureUrl || null,
+        signatureUpdatedAt: response?.signatureUpdatedAt || new Date().toISOString()
+      }));
+      setSignatureFile(null);
+      toast.success(response?.message || 'Signature uploaded');
+    } catch (error) {
+      toast.error(error.message || 'Failed to upload signature');
+    } finally {
+      setSignatureUploading(false);
+    }
   }
 
   function updateAppointmentStatus(id, nextStatus) {
@@ -1834,6 +1860,8 @@ export default function DoctorPortalPage() {
   }
 
   function renderProfile() {
+    const signatureUrl = profile?.signatureUrl || null;
+
     return (
       <section className="space-y-4">
         <Card className="space-y-4 border-violet-100/80 bg-white/85 shadow-md shadow-violet-100/40">
@@ -1862,6 +1890,39 @@ export default function DoctorPortalPage() {
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
             <p className="text-xs uppercase tracking-wide text-slate-500">Experience</p>
             <p className="text-sm font-semibold text-slate-800">{profile?.yearsOfExperience ?? 'Not available'} years</p>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-violet-100 bg-violet-50/40 p-4">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-violet-700">Prescription Signature</h3>
+          <p className="mt-1 text-sm text-slate-600">Upload once and it will be embedded into generated prescriptions with QR verification.</p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/jpg,image/webp"
+              onChange={(event) => setSignatureFile(event.target.files?.[0] || null)}
+              className="block w-full max-w-sm cursor-pointer rounded-xl border border-violet-200 bg-white px-3 py-2 text-sm text-slate-700"
+            />
+            <Button
+              type="button"
+              variant="doctor"
+              onClick={handleSignatureUpload}
+              disabled={signatureUploading || !signatureFile}
+            >
+              {signatureUploading ? 'Uploading...' : 'Upload Signature'}
+            </Button>
+          </div>
+
+          <div className="mt-3 rounded-xl border border-violet-100 bg-white p-3">
+            {signatureUrl ? (
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Current Signature</p>
+                <img src={signatureUrl} alt="Doctor signature" className="max-h-20 w-auto object-contain" />
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">No signature uploaded yet.</p>
+            )}
           </div>
         </div>
         </Card>

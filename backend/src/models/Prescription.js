@@ -67,6 +67,30 @@ const prescriptionSchema = new mongoose.Schema({
     type: String,
     default: null,
     trim: true
+  },
+  hash: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true
+  },
+  verificationUrl: {
+    type: String,
+    default: null,
+    trim: true
+  },
+  qrCodeDataUrl: {
+    type: String,
+    default: null
+  },
+  pdfDataUrl: {
+    type: String,
+    default: null
+  },
+  pdfFileName: {
+    type: String,
+    default: null,
+    trim: true
   }
 }, {
   timestamps: true,
@@ -76,5 +100,6 @@ const prescriptionSchema = new mongoose.Schema({
 prescriptionSchema.index({ patientId: 1, createdAt: -1 });
 prescriptionSchema.index({ doctorId: 1, createdAt: -1 });
 prescriptionSchema.index({ consultationId: 1 }, { unique: true });
+prescriptionSchema.index({ hash: 1 }, { unique: true });
 
 module.exports = mongoose.model('Prescription', prescriptionSchema);

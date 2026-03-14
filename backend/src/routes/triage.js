@@ -423,22 +423,38 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
   try {
     const startedAt = Date.now();
     const body = req.body || {};
+    const payloadBody = parseMaybeJson(body.payload, null);
+    const sourceBody = payloadBody && typeof payloadBody === 'object'
+      ? { ...body, ...payloadBody }
+      : body;
     // req.userId is set by authenticateAny to the resolved Patient._id (handles Google OAuth → Patient mapping).
     // Fall back to body fields only as a last resort.
-    const patientId = req.userId || body.patient_id || body.patientId;
-    const conversationHistory = normalizeConversationHistory(body.conversation_history || body.conversationHistory);
-    const context = parseMaybeJson(body.context, {});
-    const aiVitals = normalizeVitalsForAi(body.vitals || body.vitalSigns);
-    const recordVitals = normalizeVitalsForRecord(body.vitals || body.vitalSigns);
-    const availableDepartments = normalizeAvailableDepartments(body.available_departments || body.availableDepartments);
-    const inputMode = normalizeInputMode(body.input_mode || body.inputMode || context?.input_mode || context?.inputMode);
-    const chiefComplaint = inferChiefComplaint(body.chief_complaint || body.chiefComplaint, context, conversationHistory) || 'General consultation';
+    const patientId = req.userId || sourceBody.patient_id || sourceBody.patientId;
+    const conversationHistory = normalizeConversationHistory(sourceBody.conversation_history || sourceBody.conversationHistory);
+    const context = parseMaybeJson(sourceBody.context, {});
+    const aiVitals = normalizeVitalsForAi(sourceBody.vitals || sourceBody.vitalSigns);
+    const recordVitals = normalizeVitalsForRecord(sourceBody.vitals || sourceBody.vitalSigns);
+    const chosenDepartment = normalizeOptionalString(
+      sourceBody.chosen_department
+      || sourceBody.chosenDepartment
+      || sourceBody.selected_department
+      || sourceBody.selectedDepartment
+      || context?.chosen_department
+      || context?.chosenDepartment
+    );
+    const availableDepartmentsFromBody = normalizeAvailableDepartments(sourceBody.available_departments || sourceBody.availableDepartments);
+    const availableDepartments = availableDepartmentsFromBody.length
+      ? availableDepartmentsFromBody
+      : (chosenDepartment ? [chosenDepartment] : []);
+    const inputMode = normalizeInputMode(sourceBody.input_mode || sourceBody.inputMode || context?.input_mode || context?.inputMode);
+    const chiefComplaint = inferChiefComplaint(sourceBody.chief_complaint || sourceBody.chiefComplaint, context, conversationHistory) || 'General consultation';
 
     console.log('[TriageAnalyze] start', {
       traceId,
       role: req.role,
       resolvedUserId: req.userId,
-      bodyPatientId: body.patient_id || body.patientId || null,
+      bodyPatientId: sourceBody.patient_id || sourceBody.patientId || null,
+      hasWrappedPayload: Boolean(payloadBody && typeof payloadBody === 'object'),
       hasFile: Boolean(req.file?.buffer?.length),
       historyLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0,
       availableDepartmentsCount: Array.isArray(availableDepartments) ? availableDepartments.length : 0,
@@ -452,7 +468,8 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       contextKeys: Object.keys(context || {}),
       aiVitalsKeys: Object.keys(aiVitals || {}),
       recordVitalsKeys: Object.keys(recordVitals || {}),
-      availableDepartmentsPreview: availableDepartments.slice(0, 5)
+      availableDepartmentsPreview: availableDepartments.slice(0, 5),
+      chosenDepartment: chosenDepartment || null
     });
 
     if (!patientId) {
@@ -469,6 +486,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       patient_id: patientId,
       conversation_history: conversationHistory,
       available_departments: Array.isArray(availableDepartments) ? availableDepartments : [],
+      chosen_department: chosenDepartment || null,
       context: context || {},
       vitals: aiVitals
     };
@@ -491,10 +509,10 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       historical_summary: ai?.historical_summary ?? null,
       ai_analysis: ai?.ai_analysis && typeof ai.ai_analysis === 'object' ? ai.ai_analysis : null
     };
-    const departmentName = ai.department || ai.recommended_department || aiAnalysis.department || null;
-    const requestedDepartmentId = body.department_id || body.departmentId || null;
+    const departmentName = ai.department || ai.recommended_department || aiAnalysis.department || chosenDepartment || null;
+    const requestedDepartmentId = sourceBody.department_id || sourceBody.departmentId || chosenDepartment || null;
     const departmentId = await resolveDepartmentId(requestedDepartmentId || departmentName);
-    const hospitalId = body.hospital_id || body.hospitalId || null;
+    const hospitalId = sourceBody.hospital_id || sourceBody.hospitalId || null;
 
     console.log('[TriageAnalyze] resolution', {
       traceId,
