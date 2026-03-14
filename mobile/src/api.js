@@ -35,7 +35,9 @@ async function request(path, options = {}) {
       method: options.method || 'GET',
       path,
       status: response.status,
-      message: data?.error || `Request failed: ${response.status}`
+      message: data?.error || `Request failed: ${response.status}`,
+      traceId: data?.traceId || null,
+      details: data?.details || null
     });
     throw new Error(data?.error || `Request failed: ${response.status}`);
   }
@@ -453,6 +455,16 @@ export async function triageChatNext(conversationHistory) {
  * Returns the standard { triage, queue, aiRaw } shape the app expects.
  */
 export async function triageAnalyze(payload, token, file = null) {
+  const traceId = `mtriage_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  console.log('[MobileAPI] triage_analyze_start', {
+    traceId,
+    hasFile: Boolean(file),
+    hasToken: Boolean(token),
+    patientId: payload?.patient_id || null,
+    departmentId: payload?.department_id || null,
+    historyLength: Array.isArray(payload?.conversation_history) ? payload.conversation_history.length : 0
+  });
+
   if (file) {
     const formData = new FormData();
     Object.entries(payload || {}).forEach(([key, value]) => {
@@ -472,23 +484,61 @@ export async function triageAnalyze(payload, token, file = null) {
 
     const response = await fetch(`${API_BASE_URL}/v1/triage/analyze`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'x-trace-id': traceId
+      },
       body: formData
     });
 
     let data = null;
     try { data = await response.json(); } catch { data = null; }
     if (!response.ok) {
+      console.log('[MobileAPI] triage_analyze_error', {
+        traceId,
+        status: response.status,
+        message: data?.error || `Request failed: ${response.status}`,
+        serverTraceId: data?.traceId || null,
+        details: data?.details || null
+      });
       throw new Error(data?.error || `Request failed: ${response.status}`);
     }
+    console.log('[MobileAPI] triage_analyze_success', {
+      traceId,
+      serverTraceId: data?.traceId || null,
+      riskScore: data?.triage?.risk_score ?? null,
+      urgency: data?.triage?.urgency_level ?? null,
+      queuePosition: data?.queue?.queuePosition ?? null
+    });
     return data;
   }
 
-  return request('/v1/triage/analyze', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify(payload)
-  });
+  try {
+    const data = await request('/v1/triage/analyze', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'x-trace-id': traceId
+      },
+      body: JSON.stringify(payload)
+    });
+
+    console.log('[MobileAPI] triage_analyze_success', {
+      traceId,
+      serverTraceId: data?.traceId || null,
+      riskScore: data?.triage?.risk_score ?? null,
+      urgency: data?.triage?.urgency_level ?? null,
+      queuePosition: data?.queue?.queuePosition ?? null
+    });
+
+    return data;
+  } catch (error) {
+    console.log('[MobileAPI] triage_analyze_failure', {
+      traceId,
+      message: error?.message || 'unknown error'
+    });
+    throw error;
+  }
 }
 
 

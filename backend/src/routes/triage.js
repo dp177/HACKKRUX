@@ -30,6 +30,10 @@ function parseMaybeJson(value, fallback = null) {
   }
 }
 
+function buildTraceId(prefix = 'triage') {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function riskToPriority(urgencyLevel, riskScore) {
   const urgency = String(urgencyLevel || '').toUpperCase();
   if (urgency === 'CRITICAL') return 'CRITICAL';
@@ -77,7 +81,9 @@ router.post('/chat-next', authenticateAny, async (req, res) => {
 
 // New AI final analyze endpoint for mobile submit.
 router.post('/analyze', authenticateAny, upload.single('file'), async (req, res) => {
+  const traceId = req.headers['x-trace-id'] || buildTraceId('analyze');
   try {
+    const startedAt = Date.now();
     const body = req.body || {};
     // req.userId is set by authenticateAny to the resolved Patient._id (handles Google OAuth → Patient mapping).
     // Fall back to body fields only as a last resort.
@@ -88,12 +94,23 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
     const availableDepartments = parseMaybeJson(body.available_departments, []);
     const chiefComplaint = body.chief_complaint || context?.chiefComplaint || 'General consultation';
 
+    console.log('[TriageAnalyze] start', {
+      traceId,
+      role: req.role,
+      resolvedUserId: req.userId,
+      bodyPatientId: body.patient_id || body.patientId || null,
+      hasFile: Boolean(req.file?.buffer?.length),
+      historyLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0,
+      availableDepartmentsCount: Array.isArray(availableDepartments) ? availableDepartments.length : 0
+    });
+
     if (!patientId) {
       return res.status(400).json({ error: 'patient_id is required' });
     }
 
     const patient = await Patient.findById(patientId).select('_id firstName lastName');
     if (!patient) {
+      console.log('[TriageAnalyze] patient_not_found', { traceId, patientId });
       return res.status(404).json({ error: 'Patient not found' });
     }
 
@@ -106,6 +123,12 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
     };
 
     const ai = await analyzeTriage(payload, req.file || null);
+    console.log('[TriageAnalyze] ai_success', {
+      traceId,
+      riskScore: ai?.risk_score ?? ai?.riskScore ?? null,
+      urgency: ai?.urgency_level || ai?.urgencyLevel || null,
+      department: ai?.department || ai?.recommended_department || null
+    });
 
     const departmentName = ai.department || ai.recommended_department || null;
     const requestedDepartmentId = body.department_id || body.departmentId || null;
@@ -134,9 +157,11 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       triageNotes: ai.explainability_summary || ai.summary || null,
       queuePosition: null
     });
+    console.log('[TriageAnalyze] triage_record_saved', { traceId, triageRecordId: triageRecord._id });
 
     let queueEntry = null;
     if (departmentId) {
+      console.log('[TriageAnalyze] queue_enqueue_start', { traceId, patientId, departmentId, hospitalId });
       queueEntry = await enqueuePatientToDepartmentQueue({
         patientId,
         triageRecordId: triageRecord._id,
@@ -149,9 +174,21 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       triageRecord.queuePosition = queueEntry?.queuePosition || null;
       triageRecord.estimatedWaitMinutes = queueEntry?.estimatedWaitMinutes || triageRecord.estimatedWaitMinutes;
       await triageRecord.save();
+      console.log('[TriageAnalyze] queue_enqueue_done', {
+        traceId,
+        queuePosition: queueEntry?.queuePosition || null,
+        estimatedWaitMinutes: queueEntry?.estimatedWaitMinutes || null
+      });
     }
 
+    console.log('[TriageAnalyze] completed', {
+      traceId,
+      triageRecordId: triageRecord._id,
+      durationMs: Date.now() - startedAt
+    });
+
     return res.json({
+      traceId,
       triage: {
         id: triageRecord._id,
         risk_score: triageRecord.totalRiskScore,
@@ -170,10 +207,16 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       aiRaw: ai
     });
   } catch (error) {
-    console.error('triage analyze error:', error.response?.data || error.message);
+    console.error('[TriageAnalyze] failed', {
+      traceId,
+      message: error?.message || 'unknown error',
+      stack: error?.stack,
+      responseData: error?.response?.data || null
+    });
     return res.status(500).json({
       error: 'Failed to analyze triage',
-      details: error.response?.data || error.message
+      traceId,
+      details: error?.response?.data || error?.message || 'unknown error'
     });
   }
 });
