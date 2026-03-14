@@ -302,6 +302,25 @@ async function resolveDepartmentId(departmentInput) {
   return byName?._id || null;
 }
 
+async function resolveDepartmentName(departmentInput) {
+  if (!departmentInput) return null;
+
+  const raw = String(departmentInput).trim();
+  if (!raw) return null;
+
+  try {
+    const byId = await Department.findById(raw).select('name');
+    if (byId?.name) return String(byId.name).trim();
+  } catch {
+    // Ignore cast errors and continue with name-based lookup.
+  }
+
+  const byName = await Department.findOne({ name: new RegExp(`^${raw}$`, 'i') }).select('name');
+  if (byName?.name) return String(byName.name).trim();
+
+  return raw;
+}
+
 // New AI chat endpoint for mobile conversation flow.
 router.post('/chat-next', authenticateAny, async (req, res) => {
   const traceId = req.headers['x-trace-id'] || buildTraceId('chatnext');
@@ -444,6 +463,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       || context?.chosen_department
       || context?.chosenDepartment
     );
+    const chosenDepartmentName = await resolveDepartmentName(chosenDepartment);
     const inputMode = normalizeInputMode(sourceBody.input_mode || sourceBody.inputMode || context?.input_mode || context?.inputMode);
     const chiefComplaint = inferChiefComplaint(sourceBody.chief_complaint || sourceBody.chiefComplaint, context, conversationHistory) || 'General consultation';
 
@@ -465,7 +485,8 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       contextKeys: Object.keys(context || {}),
       aiVitalsKeys: Object.keys(aiVitals || {}),
       recordVitalsKeys: Object.keys(recordVitals || {}),
-      chosenDepartment: chosenDepartment || null
+      chosenDepartment: chosenDepartment || null,
+      chosenDepartmentName: chosenDepartmentName || null
     });
 
     if (!patientId) {
@@ -481,7 +502,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
     const payload = {
       patient_id: patientId,
       conversation_history: conversationHistory,
-      chosen_department: chosenDepartment || null,
+      chosen_department: chosenDepartmentName || null,
       context: context || {},
       vitals: aiVitals
     };
@@ -504,7 +525,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       historical_summary: ai?.historical_summary ?? null,
       ai_analysis: ai?.ai_analysis && typeof ai.ai_analysis === 'object' ? ai.ai_analysis : null
     };
-    const departmentName = ai.department || ai.recommended_department || aiAnalysis.department || chosenDepartment || null;
+    const departmentName = ai.department || ai.recommended_department || aiAnalysis.department || chosenDepartmentName || null;
     const requestedDepartmentId = sourceBody.department_id || sourceBody.departmentId || chosenDepartment || null;
     const departmentId = await resolveDepartmentId(requestedDepartmentId || departmentName);
     const hospitalId = sourceBody.hospital_id || sourceBody.hospitalId || null;
