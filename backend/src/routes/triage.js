@@ -192,8 +192,11 @@ function resolveSpeechEncoding(file = {}) {
   if (mime.includes('wav') || name.endsWith('.wav')) return 'LINEAR16';
   if (mime.includes('webm') || name.endsWith('.webm')) return 'WEBM_OPUS';
   if (mime.includes('ogg') || name.endsWith('.ogg') || name.endsWith('.opus')) return 'OGG_OPUS';
+  if (mime.includes('3gpp') || mime.includes('amr') || name.endsWith('.3gp') || name.endsWith('.amr')) return 'AMR';
   if (mime.includes('mp3') || name.endsWith('.mp3')) return 'MP3';
-  if (mime.includes('mp4') || mime.includes('m4a') || name.endsWith('.m4a') || name.endsWith('.mp4')) return 'MP4';
+  // Google STT v1 does not accept an MP4 enum value here.
+  // For Expo .m4a/.mp4 uploads, omit encoding so backend does not send an invalid config.
+  if (mime.includes('mp4') || mime.includes('m4a') || name.endsWith('.m4a') || name.endsWith('.mp4')) return null;
 
   return null;
 }

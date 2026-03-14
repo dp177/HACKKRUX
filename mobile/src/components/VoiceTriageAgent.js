@@ -8,6 +8,16 @@ import { colors, radii, spacing } from '../theme/tokens';
 
 const TRIAGE_COMPLETE_TOKEN = '[TRIAGE_COMPLETE]';
 
+function getMimeTypeFromUri(uri) {
+  const normalized = String(uri || '').toLowerCase();
+  if (normalized.endsWith('.wav')) return 'audio/wav';
+  if (normalized.endsWith('.webm')) return 'audio/webm';
+  if (normalized.endsWith('.ogg') || normalized.endsWith('.opus')) return 'audio/ogg';
+  if (normalized.endsWith('.3gp') || normalized.endsWith('.amr')) return 'audio/3gpp';
+  if (normalized.endsWith('.m4a') || normalized.endsWith('.mp4')) return 'audio/mp4';
+  return 'application/octet-stream';
+}
+
 export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText, token }) {
   const [conversation, setConversation] = useState([]);
   const [subtitle, setSubtitle] = useState('Tap Start to begin voice triage.');
@@ -413,7 +423,8 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
       });
 
       const rec = new Audio.Recording();
-      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      // LOW_QUALITY is more broadly compatible with cloud STT providers than high-quality AAC/m4a.
+      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.LOW_QUALITY);
       await rec.startAsync();
 
       recordingRef.current = rec;
@@ -454,7 +465,13 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
         return;
       }
 
-      const data = await triageTranscribeAudio({ fileUri: uri, token });
+      const mimeType = getMimeTypeFromUri(uri);
+      logEvent('expo_go_recording_file_ready', {
+        mimeType,
+        uriPreview: String(uri).slice(0, 120)
+      });
+
+      const data = await triageTranscribeAudio({ fileUri: uri, token, mimeType });
       const transcript = String(data?.transcript || '').trim();
       setLastTranscript(transcript);
 
