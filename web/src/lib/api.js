@@ -35,8 +35,12 @@ export async function doctorLogin(email, password) {
   });
 }
 
-export async function getDoctorDashboard(doctorId, token) {
-  return request(`/doctors/${doctorId}/dashboard`, {
+export async function getDoctorDashboard(doctorId, token, search = '') {
+  const query = new URLSearchParams({
+    ...(search ? { search: String(search) } : {})
+  });
+
+  return request(`/doctors/${doctorId}/dashboard${query.toString() ? `?${query.toString()}` : ''}`, {
     headers: { Authorization: `Bearer ${token}` }
   });
 }

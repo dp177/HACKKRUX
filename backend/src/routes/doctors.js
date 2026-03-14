@@ -112,6 +112,11 @@ async function regenerateDoctorSlots({ doctor, date }) {
 router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
   try {
     const {doctorId } = req.params;
+    const search = String(req.query.search || '').trim().toLowerCase();
+    const matchesSearch = (...values) => {
+      if (!search) return true;
+      return values.some((value) => String(value || '').toLowerCase().includes(search));
+    };
     const today = localIsoDate();
     const next7 = new Date();
     next7.setDate(next7.getDate() + 7);
@@ -230,6 +235,56 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
       visitDate: { $gte: new Date(today) }
     });
     
+    const todayAppointmentsPayload = appointments
+      .map((app) => ({
+        id: app._id,
+        time: app.scheduledTime,
+        duration: app.duration,
+        patient: {
+          id: app.patientId._id,
+          name: `${app.patientId.firstName} ${app.patientId.lastName}`,
+          age: Math.floor((new Date() - new Date(app.patientId.dateOfBirth)) / 31557600000),
+          phone: app.patientId.phone
+        },
+        type: app.appointmentType,
+        status: app.status,
+        chiefComplaint: app.chiefComplaint
+      }))
+      .filter((app) => matchesSearch(app.patient?.name, app.chiefComplaint, app.status, app.time, app.type));
+
+    const upcomingAppointmentsPayload = upcomingAppointments
+      .map((app) => ({
+        id: app._id,
+        date: app.scheduledDate,
+        time: app.scheduledTime,
+        duration: app.duration,
+        patient: {
+          id: app.patientId?._id,
+          name: app.patientId ? `${app.patientId.firstName} ${app.patientId.lastName}` : 'Patient'
+        },
+        type: app.appointmentType,
+        status: app.status,
+        chiefComplaint: app.chiefComplaint
+      }))
+      .filter((app) => matchesSearch(app.patient?.name, app.chiefComplaint, app.status, app.time, app.date, app.type));
+
+    const filteredQueue = (queueData.queue || []).filter((row) => matchesSearch(
+      row.patient_name,
+      row.chief_complaint,
+      row.department,
+      row.urgency_level,
+      row.priority_level,
+      row.status
+    ));
+
+    const waitingCount = filteredQueue.filter((row) => row.status === 'WAITING').length;
+    const hasActiveConsultation = filteredQueue.some((row) => row.status === 'IN_CONSULTATION');
+    const avgWaitMinutes = waitingCount
+      ? Math.round(filteredQueue
+        .filter((row) => row.status === 'WAITING')
+        .reduce((sum, row) => sum + Number(row.estimated_wait_minutes || 0), 0) / waitingCount)
+      : 0;
+
     res.json({
       doctor: {
         id: doctor.id,
@@ -242,49 +297,26 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
       todayDate: today,
       
       todaySchedule: {
-        totalAppointments: appointments.length,
-        appointments: appointments.map(app => ({
-          id: app._id,
-          time: app.scheduledTime,
-          duration: app.duration,
-          patient: {
-            id: app.patientId._id,
-            name: `${app.patientId.firstName} ${app.patientId.lastName}`,
-            age: Math.floor((new Date() - new Date(app.patientId.dateOfBirth)) / 31557600000),
-            phone: app.patientId.phone
-          },
-          type: app.appointmentType,
-          status: app.status,
-          chiefComplaint: app.chiefComplaint
-        }))
+        totalAppointments: todayAppointmentsPayload.length,
+        appointments: todayAppointmentsPayload
       },
 
       upcomingAppointments: {
-        total: upcomingAppointments.length,
-        appointments: upcomingAppointments.map(app => ({
-          id: app._id,
-          date: app.scheduledDate,
-          time: app.scheduledTime,
-          duration: app.duration,
-          patient: {
-            id: app.patientId?._id,
-            name: app.patientId ? `${app.patientId.firstName} ${app.patientId.lastName}` : 'Patient'
-          },
-          type: app.appointmentType,
-          status: app.status,
-          chiefComplaint: app.chiefComplaint
-        }))
+        total: upcomingAppointmentsPayload.length,
+        appointments: upcomingAppointmentsPayload
       },
       
       currentQueue: {
-        ...queueData.statistics,
-        patients: queueData.queue || []
+        waiting_count: waitingCount,
+        active_consultation: hasActiveConsultation,
+        avg_wait_minutes: avgWaitMinutes,
+        patients: filteredQueue
       },
       
       statistics: {
         completedToday,
-        patientsWaiting: queueData.statistics?.waiting_count || 0,
-        avgWaitTime: queueData.statistics?.avg_wait_minutes || 0
+        patientsWaiting: waitingCount,
+        avgWaitTime: avgWaitMinutes
       }
     });
     

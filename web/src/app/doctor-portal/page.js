@@ -2,8 +2,37 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { AnimatePresence, motion } from 'framer-motion';
+import {
+  FiBell,
+  FiCalendar,
+  FiClock,
+  FiFileText,
+  FiGrid,
+  FiHome,
+  FiLogOut,
+  FiMenu,
+  FiSearch,
+  FiUser,
+  FiUsers,
+  FiX
+} from 'react-icons/fi';
 import { toast } from 'sonner';
 import { io } from 'socket.io-client';
+import { Avatar, AvatarFallback, AvatarImage } from '../../components/ui/avatar';
+import { Badge } from '../../components/ui/badge';
+import { Button } from '../../components/ui/button';
+import { Card } from '../../components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '../../components/ui/dropdown-menu';
+import { Input } from '../../components/ui/input';
+import { Textarea } from '../../components/ui/textarea';
 import {
   addDoctorSlot,
   addDoctorBreak,
@@ -32,9 +61,17 @@ const NAV_ITEMS = [
   'Appointments',
   'Availability',
   'Patient History',
-  'Profile',
-  'Notifications'
+  'Profile'
 ];
+
+const NAV_ICONS = {
+  Dashboard: FiHome,
+  'Patient Queue': FiUsers,
+  Appointments: FiCalendar,
+  Availability: FiClock,
+  'Patient History': FiFileText,
+  Profile: FiUser
+};
 
 const PRIORITY_META = {
   critical: { label: 'Critical', color: 'bg-red-100 text-red-700 border-red-200' },
@@ -78,7 +115,7 @@ function normalizePriority(raw) {
 
 function priorityBadge(priority) {
   const meta = PRIORITY_META[priority] || PRIORITY_META.low;
-  return <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${meta.color}`}>{meta.label}</span>;
+  return <Badge className={`border text-[11px] font-semibold normal-case tracking-normal ${meta.color}`}>{meta.label}</Badge>;
 }
 
 function queueRowFromRaw(item, index) {
@@ -144,14 +181,148 @@ function formatDateWithDay(date) {
   };
 }
 
+function formatAppointmentDate(dateValue) {
+  const raw = String(dateValue || '').trim();
+  if (!raw) return '';
+
+  const isoDateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoDateOnly) {
+    const year = Number(isoDateOnly[1]);
+    const month = Number(isoDateOnly[2]);
+    const day = Number(isoDateOnly[3]);
+    const safeLocalDate = new Date(year, month - 1, day, 12, 0, 0);
+    return safeLocalDate.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  }
+
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  }
+
+  return raw;
+}
+
+function formatAppointmentTime(timeValue) {
+  const raw = String(timeValue || '').trim();
+  if (!raw) return '';
+
+  const hhmm = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (hhmm) {
+    const hours = Number(hhmm[1]);
+    const minutes = Number(hhmm[2]);
+    const base = new Date();
+    base.setHours(hours, minutes, 0, 0);
+    return base.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+
+  return raw;
+}
+
+function formatAppointmentDateTime(dateValue, timeValue) {
+  const dateLabel = formatAppointmentDate(dateValue);
+  const timeLabel = formatAppointmentTime(timeValue);
+
+  if (dateLabel && timeLabel) return `${dateLabel} ${timeLabel}`;
+  if (dateLabel) return dateLabel;
+  if (timeLabel) return timeLabel;
+  return 'Date/Time TBD';
+}
+
+function filterDashboardDataLocally(rawDashboard, rawQuery) {
+  const query = String(rawQuery || '').trim().toLowerCase();
+  if (!rawDashboard || !query) return rawDashboard;
+
+  const matches = (...values) => values.some((value) => String(value || '').toLowerCase().includes(query));
+
+  const todayAppointments = Array.isArray(rawDashboard?.todaySchedule?.appointments)
+    ? rawDashboard.todaySchedule.appointments.filter((item) => matches(
+      item?.patient?.name,
+      item?.chiefComplaint,
+      item?.status,
+      item?.time,
+      item?.type
+    ))
+    : [];
+
+  const upcomingAppointments = Array.isArray(rawDashboard?.upcomingAppointments?.appointments)
+    ? rawDashboard.upcomingAppointments.appointments.filter((item) => matches(
+      item?.patient?.name,
+      item?.chiefComplaint,
+      item?.status,
+      item?.time,
+      item?.date,
+      item?.type
+    ))
+    : [];
+
+  const queuePatients = Array.isArray(rawDashboard?.currentQueue?.patients)
+    ? rawDashboard.currentQueue.patients.filter((item) => matches(
+      item?.patient_name,
+      item?.patientName,
+      item?.name,
+      item?.chief_complaint,
+      item?.symptoms,
+      item?.department,
+      item?.status,
+      item?.priority_level,
+      item?.urgency_level
+    ))
+    : [];
+
+  const waitingCount = queuePatients.filter((item) => String(item?.status || '').toUpperCase() === 'WAITING').length;
+  const avgWait = waitingCount
+    ? Math.round(queuePatients
+      .filter((item) => String(item?.status || '').toUpperCase() === 'WAITING')
+      .reduce((sum, item) => sum + Number(item?.estimated_wait_minutes || item?.estimatedWaitMinutes || item?.wait_minutes || 0), 0) / waitingCount)
+    : 0;
+
+  return {
+    ...rawDashboard,
+    todaySchedule: {
+      ...(rawDashboard.todaySchedule || {}),
+      totalAppointments: todayAppointments.length,
+      appointments: todayAppointments
+    },
+    upcomingAppointments: {
+      ...(rawDashboard.upcomingAppointments || {}),
+      total: upcomingAppointments.length,
+      appointments: upcomingAppointments
+    },
+    currentQueue: {
+      ...(rawDashboard.currentQueue || {}),
+      waiting_count: waitingCount,
+      avg_wait_minutes: avgWait,
+      patients: queuePatients
+    },
+    statistics: {
+      ...(rawDashboard.statistics || {}),
+      patientsWaiting: waitingCount,
+      avgWaitTime: avgWait
+    }
+  };
+}
+
 export default function DoctorPortalPage() {
   const router = useRouter();
   const [activeNav, setActiveNav] = useState('Dashboard');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [globalSearch, setGlobalSearch] = useState('');
+  const [debouncedGlobalSearch, setDebouncedGlobalSearch] = useState('');
 
   const [token, setToken] = useState('');
   const [doctor, setDoctor] = useState(null);
   const [profile, setProfile] = useState(null);
   const [dashboard, setDashboard] = useState(null);
+  const [fullDashboard, setFullDashboard] = useState(null);
 
   const [selectedQueuePatient, setSelectedQueuePatient] = useState(null);
   const [selectedPatientPreview, setSelectedPatientPreview] = useState(null);
@@ -199,7 +370,6 @@ export default function DoctorPortalPage() {
   const [availabilitySchedule, setAvailabilitySchedule] = useState(null);
   const [availabilityBreaks, setAvailabilityBreaks] = useState([]);
   const [availabilitySlots, setAvailabilitySlots] = useState([]);
-  const [notifications, setNotifications] = useState([]);
   const [appointmentNotes, setAppointmentNotes] = useState({});
   const [appointmentsState, setAppointmentsState] = useState({});
   const [doctorHistory, setDoctorHistory] = useState({
@@ -254,6 +424,34 @@ export default function DoctorPortalPage() {
 
   const urgentCases = useMemo(() => queue.filter((item) => item.urgency === 'critical' || item.urgency === 'high').slice(0, 5), [queue]);
 
+  const searchQuery = useMemo(() => String(globalSearch || '').trim().toLowerCase(), [globalSearch]);
+
+  const filteredQueue = useMemo(() => {
+    if (!searchQuery) return queue;
+    return queue.filter((item) => (
+      String(item.name || '').toLowerCase().includes(searchQuery)
+      || String(item.symptoms || '').toLowerCase().includes(searchQuery)
+      || String(item.department || '').toLowerCase().includes(searchQuery)
+    ));
+  }, [queue, searchQuery]);
+
+  const filteredAppointments = useMemo(() => {
+    if (!searchQuery) return appointments;
+    return appointments.filter((item) => (
+      String(item.patient?.name || '').toLowerCase().includes(searchQuery)
+      || String(item.time || '').toLowerCase().includes(searchQuery)
+      || String(item.status || '').toLowerCase().includes(searchQuery)
+    ));
+  }, [appointments, searchQuery]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedGlobalSearch(String(globalSearch || '').trim());
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [globalSearch]);
+
   useEffect(() => {
     const savedToken = localStorage.getItem('doctorPortalToken');
     const savedDoctor = localStorage.getItem('doctorPortalDoctor');
@@ -272,14 +470,16 @@ export default function DoctorPortalPage() {
       return;
     }
 
-    loadPortalData(false);
+    const backendSearch = activeNav === 'Dashboard' ? debouncedGlobalSearch : '';
+
+    loadPortalData(false, { search: backendSearch });
 
     const timer = setInterval(() => {
-      loadPortalData(true);
+      loadPortalData(true, { search: backendSearch });
     }, 15000);
 
     return () => clearInterval(timer);
-  }, [token, doctor?.id]);
+  }, [token, doctor?.id, activeNav, debouncedGlobalSearch]);
 
   useEffect(() => {
     const departmentId = dashboard?.doctor?.departmentId;
@@ -432,17 +632,31 @@ export default function DoctorPortalPage() {
     }
   }
 
-  async function loadPortalData(silent) {
+  async function loadPortalData(silent, options = {}) {
     if (!silent) setLoading(true);
 
     try {
+      const dashboardSearch = String(options.search || '').trim();
       const [dashboardData, profileData, historyData] = await Promise.all([
-        getDoctorDashboard(doctor.id, token),
+        getDoctorDashboard(doctor.id, token, dashboardSearch),
         getDoctorProfile(token),
         getDoctorPatientHistory(doctor.id, token)
       ]);
 
-      setDashboard(dashboardData);
+      if (!dashboardSearch) {
+        setFullDashboard(dashboardData);
+        setDashboard(dashboardData);
+      } else {
+        const backendHasResults = Number(dashboardData?.todaySchedule?.totalAppointments || 0) > 0
+          || Number(dashboardData?.upcomingAppointments?.total || 0) > 0
+          || Array.isArray(dashboardData?.currentQueue?.patients) && dashboardData.currentQueue.patients.length > 0;
+
+        if (backendHasResults || !fullDashboard) {
+          setDashboard(dashboardData);
+        } else {
+          setDashboard(filterDashboardDataLocally(fullDashboard, dashboardSearch));
+        }
+      }
       setProfile(profileData);
       setDoctorHistory(historyData || {
         totals: { totalVisits: 0, totalPatientsTreated: 0, treatedToday: 0 },
@@ -712,69 +926,102 @@ export default function DoctorPortalPage() {
 
   function renderDashboard() {
     return (
-      <section className="space-y-5">
-        <article className="card">
-          <h2 className="mb-4 text-2xl font-semibold text-slate-900">Welcome {doctor?.name || 'Doctor'}</h2>
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Patients Waiting</p>
-              <p className="mt-2 text-2xl font-bold text-slate-900">{metrics.waiting}</p>
+      <section className="space-y-6">
+        <Card className="border-violet-100/80 bg-gradient-to-r from-white via-violet-50/60 to-indigo-50/60 p-6 shadow-lg shadow-violet-100/60">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">Jeeva - Doctor Portal</p>
+              <h2 className="mt-2 text-2xl font-semibold text-slate-900">Clinical Command Center for {doctor?.name || 'Doctor'}</h2>
+              <p className="mt-1 text-sm text-slate-600">Real-time queue visibility, triage intelligence, and consultation workflows in one place.</p>
             </div>
-            <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-              <p className="text-xs uppercase tracking-wide text-red-600">High Priority Cases</p>
-              <p className="mt-2 text-2xl font-bold text-red-700">{metrics.highPriority}</p>
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Today's Appointments</p>
-              <p className="mt-2 text-2xl font-bold text-slate-900">{metrics.todayAppointments}</p>
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Average Wait Time</p>
-              <p className="mt-2 text-2xl font-bold text-slate-900">{metrics.avgWait} min</p>
-            </div>
+            <Button variant="doctorGradient" onClick={handleCallNextPatient}>Call Next Patient</Button>
           </div>
-        </article>
+        </Card>
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            { label: 'Patients Waiting', value: metrics.waiting, icon: FiUsers, glow: 'from-violet-500 to-indigo-500' },
+            { label: 'High Priority Cases', value: metrics.highPriority, icon: FiBell, glow: 'from-rose-400 to-red-500' },
+            { label: "Today's Appointments", value: metrics.todayAppointments, icon: FiCalendar, glow: 'from-violet-500 to-fuchsia-500' },
+            { label: 'Average Wait Time', value: `${metrics.avgWait} min`, icon: FiGrid, glow: 'from-indigo-500 to-violet-500' }
+          ].map((item) => (
+            <motion.div whileHover={{ y: -6 }} transition={{ type: 'spring', stiffness: 260, damping: 18 }} key={item.label}>
+              <Card className="group overflow-hidden border-violet-100/80 bg-white/80 p-5 shadow-md shadow-violet-100/40 backdrop-blur">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{item.label}</p>
+                  <div className={`rounded-xl bg-gradient-to-br ${item.glow} p-2 text-white shadow`}> 
+                    <item.icon size={16} />
+                  </div>
+                </div>
+                <motion.p
+                  key={String(item.value)}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-3 text-3xl font-semibold text-slate-900"
+                >
+                  {item.value}
+                </motion.p>
+              </Card>
+            </motion.div>
+          ))}
+        </div>
 
         <div className="grid gap-5 xl:grid-cols-2">
-          <article className="card">
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-900">High Priority Cases</h3>
-              <button type="button" onClick={handleCallNextPatient}>Start Consultation</button>
+          <Card className="border-red-100/80 bg-white/85 p-5 shadow-md shadow-rose-100/60">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="text-base font-semibold text-slate-900">Urgent Cases</h3>
+              <Button size="sm" variant="doctorOutline" onClick={() => setActiveNav('Patient Queue')}>Open Queue</Button>
             </div>
             {!urgentCases.length && <p className="text-sm text-slate-500">No urgent alerts right now.</p>}
-            <div className="space-y-2">
-              {urgentCases.map((item) => (
-                <button
+            <div className="space-y-3">
+              {urgentCases.map((item, index) => (
+                <motion.button
                   key={item.rowKey}
                   type="button"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-slate-700 hover:border-violet-300"
-                  onClick={() => handleSelectQueuePatient(item)}
+                  initial={{ opacity: 0, x: -14 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: index * 0.05 }}
+                  className="w-full rounded-2xl border border-red-100 bg-gradient-to-r from-red-50/70 to-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-red-200"
+                  onClick={() => {
+                    setActiveNav('Patient Queue');
+                    handleSelectQueuePatient(item);
+                  }}
                 >
-                  <p className="text-sm font-semibold">{item.name}</p>
-                  <p className="text-xs text-slate-500">{item.symptoms}</p>
-                  <div className="mt-1 flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-900">{item.name}</p>
                     {priorityBadge(item.urgency)}
-                    <span className="text-xs text-slate-500">Score: {item.score}</span>
                   </div>
-                </button>
+                  <p className="mt-1 text-xs text-slate-600">{item.symptoms}</p>
+                  <p className="mt-2 text-xs font-medium text-red-600">Triage score {item.score} - Wait {item.waitTime}</p>
+                </motion.button>
               ))}
             </div>
-          </article>
+          </Card>
 
-          <article className="card">
-            <h3 className="mb-3 text-lg font-semibold text-slate-900">Today's Schedule</h3>
+          <Card className="border-violet-100/80 bg-white/85 p-5 shadow-md shadow-violet-100/50">
+            <h3 className="mb-3 text-base font-semibold text-slate-900">Today's Schedule</h3>
             <div className="space-y-2">
-              {appointments.slice(0, 6).map((item) => {
+              {(() => {
+                const todayScheduleItems = appointments.slice(0, 6);
+                if (!todayScheduleItems.length) {
+                  return <p className="text-sm text-slate-500">No appointments for today.</p>;
+                }
+
+                return todayScheduleItems.map((item) => {
                 const status = appointmentsState[item.id]?.status || item.status || 'upcoming';
                 return (
-                  <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                    <p className="text-sm font-semibold text-slate-800">{item.time} - {item.patient?.name || 'Patient'}</p>
-                    <p className="text-xs capitalize text-slate-500">Status: {status}</p>
-                  </div>
+                  <motion.div key={item.id} whileHover={{ x: 2 }} className="rounded-xl border border-violet-100 bg-violet-50/45 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-slate-800">{formatAppointmentTime(item.time)} - {item.patient?.name || 'Patient'}</p>
+                      <Badge variant="slate" className="normal-case tracking-normal">{status}</Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">{formatAppointmentDate(item.displayDate)}</p>
+                  </motion.div>
                 );
-              })}
+                });
+              })()}
             </div>
-          </article>
+          </Card>
         </div>
       </section>
     );
@@ -798,421 +1045,341 @@ export default function DoctorPortalPage() {
     const selectedDepartment = selectedAi.department || selectedQueuePatient?.department || '-';
 
     return (
-      <section className="space-y-5">
-        <article className="card">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-semibold text-slate-900">Patient Queue</h2>
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={handleCallNextPatient}>Call Top Patient</button>
-              <button type="button" className="secondary" onClick={() => loadPortalData(false)}>Refresh Queue</button>
+      <section className="space-y-6">
+        <Card className="border-violet-100/80 bg-white/80 p-5 shadow-md shadow-violet-100/50 backdrop-blur">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-900">Patient Queue Board</h2>
+              <p className="text-sm text-slate-500">Card-based queue with AI triage priority and live consultation context.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="doctor" onClick={handleCallNextPatient}>Call Top Patient</Button>
+              <Button variant="doctorOutline" onClick={() => loadPortalData(false)}>Refresh Queue</Button>
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="min-w-full border-separate border-spacing-y-2 text-sm">
-              <thead>
-                <tr className="text-left text-slate-500">
-                  <th className="px-2 py-1">Patient</th>
-                  <th className="px-2 py-1">Symptoms</th>
-                  <th className="px-2 py-1">Department</th>
-                  <th className="px-2 py-1">Status</th>
-                  <th className="px-2 py-1">Urgency</th>
-                  <th className="px-2 py-1">Score</th>
-                  <th className="px-2 py-1">Waited</th>
-                  <th className="px-2 py-1">Wait</th>
-                </tr>
-              </thead>
-              <tbody>
-                {!queue.length ? (
-                  <tr>
-                    <td className="px-2 py-3 text-slate-500" colSpan={8}>No patients in queue.</td>
-                  </tr>
-                ) : null}
-                {queue.map((item) => (
-                  <tr
-                    key={item.rowKey}
-                    className="cursor-pointer rounded-xl border border-slate-200 bg-white hover:bg-slate-50"
-                    onClick={() => handleSelectQueuePatient(item)}
-                  >
-                    <td className="px-2 py-2 font-semibold text-slate-800">{item.name}</td>
-                    <td className="px-2 py-2 text-slate-600">{item.symptoms}</td>
-                    <td className="px-2 py-2 text-slate-700">{item.department}</td>
-                    <td className="px-2 py-2 text-slate-700">{item.status === 'IN_CONSULTATION' ? 'IN CONSULTATION' : item.status}</td>
-                    <td className="px-2 py-2">{priorityBadge(item.urgency)}</td>
-                    <td className="px-2 py-2 text-slate-700">{item.score}</td>
-                    <td className="px-2 py-2 text-slate-700">{item.waitedTime}</td>
-                    <td className="px-2 py-2 text-slate-600">{item.waitTime}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="mt-5 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+            {!filteredQueue.length ? <p className="text-sm text-slate-500">No patients in queue.</p> : null}
+            {filteredQueue.map((item, index) => {
+              const active = selectedQueuePatient?.rowKey === item.rowKey;
+              return (
+                <motion.button
+                  key={item.rowKey}
+                  type="button"
+                  onClick={() => handleSelectQueuePatient(item)}
+                  initial={{ opacity: 0, y: 14 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.03 }}
+                  whileHover={{ y: -4 }}
+                  className={`rounded-2xl border p-4 text-left shadow-sm transition ${active ? 'border-violet-300 bg-violet-50/80 shadow-violet-200/50' : 'border-violet-100 bg-white hover:border-violet-200'}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-3">
+                      <Avatar className="h-9 w-9 border-violet-200">
+                        <AvatarFallback>{String(item.name || 'P').slice(0, 1).toUpperCase()}</AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">{item.name}</p>
+                        <p className="text-xs text-slate-500">{item.department}</p>
+                      </div>
+                    </div>
+                    {priorityBadge(item.urgency)}
+                  </div>
+                  <p className="mt-3 text-xs text-slate-600 line-clamp-2">{item.symptoms}</p>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-lg bg-violet-50 p-2 text-slate-700">Risk Score <span className="ml-1 font-semibold">{item.score}</span></div>
+                    <div className="rounded-lg bg-slate-100 p-2 text-slate-700">Wait <span className="ml-1 font-semibold">{item.waitTime}</span></div>
+                    <div className="rounded-lg bg-slate-100 p-2 text-slate-700">Waited <span className="ml-1 font-semibold">{item.waitedTime}</span></div>
+                    <div className="rounded-lg bg-slate-100 p-2 text-slate-700">Status <span className="ml-1 font-semibold">{item.status === 'IN_CONSULTATION' ? 'IN CONSULTATION' : item.status}</span></div>
+                  </div>
+                </motion.button>
+              );
+            })}
           </div>
-        </article>
+        </Card>
 
-        <article className="card">
-          <h3 className="mb-3 text-lg font-semibold text-slate-900">Patient Detail</h3>
-          {!selectedQueuePatient && <p className="text-sm text-slate-500">Select a patient from queue to view details.</p>}
-          {selectedQueuePatient && (
-            <div className="space-y-3 text-sm text-slate-700">
-              <p><span className="font-semibold">Name:</span> {selectedQueuePatient.name}</p>
-              <p><span className="font-semibold">Symptoms:</span> {selectedQueuePatient.symptoms}</p>
-              <p><span className="font-semibold">Urgency:</span> {priorityBadge(selectedQueuePatient.urgency)}</p>
-
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="mb-1 text-sm font-semibold text-slate-800">Extended Summary</p>
-                <p className="text-sm text-slate-600">
-                  {selectedRawAnalysis?.explainability_summary
-                    || selectedQueuePatient.explainabilitySummary
-                    || selectedPatientPreview?.todayTriage?.explainabilitySummary
-                    || selectedPatientPreview?.todayTriage?.triageNotes
-                    || 'No explainability summary available.'}
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="mb-1 text-sm font-semibold text-slate-800">Historical Summary</p>
-                <p className="text-sm text-slate-600">{selectedRawAnalysis?.historical_summary ?? selectedQueuePatient.historicalSummary ?? selectedPatientPreview?.todayTriage?.historicalSummary ?? 'No historical summary available.'}</p>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-white p-3">
-                <p className="mb-2 text-sm font-semibold text-slate-800">AI Clinical Extraction</p>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <p className="text-xs text-slate-600"><span className="font-semibold text-slate-700">Chief Complaint:</span> {selectedAi.chief_complaint || selectedQueuePatient.symptoms || '-'}</p>
-                  <p className="text-xs text-slate-600"><span className="font-semibold text-slate-700">Severity:</span> {String(selectedSeverity)}</p>
-                  <p className="text-xs text-slate-600"><span className="font-semibold text-slate-700">Onset Type:</span> {String(selectedOnsetType)}</p>
-                  <p className="text-xs text-slate-600"><span className="font-semibold text-slate-700">Symptom Category:</span> {String(selectedSymptomCategory)}</p>
-                  <p className="text-xs text-slate-600 sm:col-span-2"><span className="font-semibold text-slate-700">Department:</span> {String(selectedDepartment)}</p>
+        <AnimatePresence mode="wait">
+          {selectedQueuePatient ? (
+            <motion.div
+              key={selectedQueuePatient.rowKey}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="grid gap-5 xl:grid-cols-2"
+            >
+              <Card className="border-violet-100/80 bg-white/85 p-5 shadow-md shadow-violet-100/40">
+                <div className="mb-4 flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-900">AI Clinical Extraction</h3>
+                    <p className="text-xs text-slate-500">{selectedQueuePatient.name} - {selectedQueuePatient.department}</p>
+                  </div>
+                  {priorityBadge(selectedQueuePatient.urgency)}
                 </div>
 
-                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-violet-700">Summary</p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {selectedRawAnalysis?.explainability_summary
+                      || selectedQueuePatient.explainabilitySummary
+                      || selectedPatientPreview?.todayTriage?.explainabilitySummary
+                      || selectedPatientPreview?.todayTriage?.triageNotes
+                      || 'No explainability summary available.'}
+                  </p>
+                </div>
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600"><span className="font-semibold text-slate-800">Chief Complaint:</span> {selectedAi.chief_complaint || selectedQueuePatient.symptoms || '-'}</div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600"><span className="font-semibold text-slate-800">Severity:</span> {String(selectedSeverity)}</div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600"><span className="font-semibold text-slate-800">Onset Type:</span> {String(selectedOnsetType)}</div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600"><span className="font-semibold text-slate-800">Symptom Category:</span> {String(selectedSymptomCategory)}</div>
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Extracted Symptoms</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Symptoms</p>
                     {!selectedSymptoms.length ? <p className="mt-1 text-xs text-slate-500">No symptoms extracted.</p> : (
-                      <ul className="mt-1 list-disc pl-4 text-xs text-slate-600">
-                        {selectedSymptoms.map((symptom, idx) => <li key={`${symptom}-${idx}`}>{symptom}</li>)}
-                      </ul>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {selectedSymptoms.map((symptom, idx) => <Badge key={`${symptom}-${idx}`} variant="purple" className="normal-case tracking-normal">{symptom}</Badge>)}
+                      </div>
                     )}
                   </div>
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Detected Red Flags</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Red Flags</p>
                     {!selectedRedFlags.length ? <p className="mt-1 text-xs text-slate-500">No red flags detected.</p> : (
-                      <ul className="mt-1 list-disc pl-4 text-xs text-slate-600">
-                        {selectedRedFlags.map((flag, idx) => <li key={`${flag}-${idx}`}>{flag}</li>)}
-                      </ul>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {selectedRedFlags.map((flag, idx) => <Badge key={`${flag}-${idx}`} className="bg-red-100 text-red-700 normal-case tracking-normal">{flag}</Badge>)}
+                      </div>
                     )}
                   </div>
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Comorbidities</p>
                     {!selectedComorbidities.length ? <p className="mt-1 text-xs text-slate-500">No comorbidities extracted.</p> : (
-                      <ul className="mt-1 list-disc pl-4 text-xs text-slate-600">
-                        {selectedComorbidities.map((item, idx) => <li key={`${item}-${idx}`}>{item}</li>)}
-                      </ul>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {selectedComorbidities.map((item, idx) => <Badge key={`${item}-${idx}`} variant="slate" className="normal-case tracking-normal">{item}</Badge>)}
+                      </div>
                     )}
                   </div>
                 </div>
-              </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-slate-800">Previous Prescriptions</p>
-                  <span className="text-xs text-slate-500">{patientPrescriptions.length} records</span>
+                <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Historical Summary</p>
+                  <p className="mt-1 text-sm text-slate-600">{selectedRawAnalysis?.historical_summary ?? selectedQueuePatient.historicalSummary ?? selectedPatientPreview?.todayTriage?.historicalSummary ?? 'No historical summary available.'}</p>
                 </div>
 
-                {!patientPrescriptions.length ? (
-                  <p className="text-xs text-slate-500">No previous prescriptions found.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {(showAllPrescriptionHistory ? patientPrescriptions : patientPrescriptions.slice(0, 5)).map((item) => {
-                      const isExpanded = expandedPrescriptionId === item.id;
-                      const full = item.full || {};
-                      const fullMedicines = full.medicines || [];
-                      return (
-                        <div key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                          {/* Summary row — click to expand */}
-                          <button
-                            type="button"
-                            onClick={() => setExpandedPrescriptionId(isExpanded ? null : item.id)}
-                            className="w-full text-left p-2 hover:bg-slate-100 transition-colors"
-                          >
-                            <div className="flex items-center justify-between gap-2">
+                <div className="mt-4 rounded-xl border border-violet-100 bg-white p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-800">Previous Prescriptions</p>
+                    <Badge variant="slate" className="normal-case tracking-normal">{patientPrescriptions.length} records</Badge>
+                  </div>
+                  {!patientPrescriptions.length ? <p className="text-xs text-slate-500">No previous prescriptions found.</p> : (
+                    <div className="space-y-2">
+                      {(showAllPrescriptionHistory ? patientPrescriptions : patientPrescriptions.slice(0, 5)).map((item) => {
+                        const isExpanded = expandedPrescriptionId === item.id;
+                        const full = item.full || {};
+                        const fullMedicines = full.medicines || [];
+                        return (
+                          <div key={item.id} className="overflow-hidden rounded-xl border border-violet-100 bg-violet-50/40">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedPrescriptionId(isExpanded ? null : item.id)}
+                              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+                            >
                               <div className="min-w-0">
-                                <p className="text-xs font-semibold text-slate-700">{new Date(item.date).toLocaleDateString()}</p>
-                                <p className="text-xs text-slate-600">Diagnosis: {item.diagnosis || 'Not recorded'}</p>
-                                <p className="text-xs text-slate-500 truncate">Medicines: {(item.medicines || []).join(', ') || 'Not recorded'}</p>
+                                <p className="text-xs font-semibold text-slate-700">{new Date(item.date).toLocaleDateString()} - {item.diagnosis || 'Diagnosis pending'}</p>
+                                <p className="truncate text-xs text-slate-500">Doctor: {item.doctorName || '-'} | Medicines: {(item.medicines || []).join(', ') || 'Not recorded'}</p>
                               </div>
-                              <span className="shrink-0 text-slate-400 text-xs">{isExpanded ? '▲' : '▼'}</span>
-                            </div>
-                          </button>
-
-                          {/* Expanded detail */}
-                          {isExpanded && (
-                            <div className="border-t border-slate-200 bg-white p-3 space-y-3">
-                              {/* Doctor */}
-                              {item.doctorName && (
-                                <p className="text-xs text-slate-500">Prescribed by: <span className="font-medium text-slate-700">{item.doctorName}</span></p>
-                              )}
-
-                              {/* Vitals */}
-                              {(full.form?.temperature || full.form?.bloodPressure || full.form?.notes) && (
-                                <div>
-                                  <p className="text-xs font-semibold text-slate-600 mb-1">Vitals / Notes</p>
-                                  <div className="flex flex-wrap gap-x-4 gap-y-1">
-                                    {full.form?.temperature && <span className="text-xs text-slate-600">Temp: {full.form.temperature}</span>}
-                                    {full.form?.bloodPressure && <span className="text-xs text-slate-600">BP: {full.form.bloodPressure}</span>}
-                                  </div>
-                                  {full.form?.notes && <p className="text-xs text-slate-600 mt-1">Notes: {full.form.notes}</p>}
-                                </div>
-                              )}
-
-                              {/* Medicines table */}
-                              {fullMedicines.length > 0 && (
-                                <div>
-                                  <p className="text-xs font-semibold text-slate-600 mb-1">Medicines ({fullMedicines.length})</p>
-                                  <div className="space-y-2">
+                              <span className="text-xs text-slate-500">{isExpanded ? 'Hide' : 'View'}</span>
+                            </button>
+                            <AnimatePresence>
+                              {isExpanded ? (
+                                <motion.div
+                                  initial={{ height: 0, opacity: 0 }}
+                                  animate={{ height: 'auto', opacity: 1 }}
+                                  exit={{ height: 0, opacity: 0 }}
+                                  className="border-t border-violet-100 bg-white px-3 py-2"
+                                >
+                                  {(full.form?.temperature || full.form?.bloodPressure || full.form?.notes) ? (
+                                    <div className="mb-2 text-xs text-slate-600">
+                                      {full.form?.temperature ? <span className="mr-3">Temp: {full.form.temperature}</span> : null}
+                                      {full.form?.bloodPressure ? <span className="mr-3">BP: {full.form.bloodPressure}</span> : null}
+                                      {full.form?.notes ? <span>Notes: {full.form.notes}</span> : null}
+                                    </div>
+                                  ) : null}
+                                  <div className="space-y-1">
                                     {fullMedicines.map((med, idx) => (
-                                      <div key={idx} className="rounded border border-slate-100 bg-slate-50 p-2">
-                                        <p className="text-xs font-semibold text-slate-800">{med.name}</p>
-                                        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
-                                          {med.dosage && <span className="text-xs text-slate-500">Dose: <span className="text-slate-700">{med.dosage}</span></span>}
-                                          {med.frequency && <span className="text-xs text-slate-500">Freq: <span className="text-slate-700">{med.frequency}</span></span>}
-                                          {med.duration && <span className="text-xs text-slate-500">Duration: <span className="text-slate-700">{med.duration}</span></span>}
-                                        </div>
-                                        {med.instructions && <p className="text-xs text-slate-500 mt-0.5">Instructions: <span className="text-slate-700">{med.instructions}</span></p>}
+                                      <div key={idx} className="rounded-lg border border-slate-100 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                                        <span className="font-semibold text-slate-800">{med.name}</span>
+                                        <span className="ml-2">{med.dosage || '-'} | {med.frequency || '-'} | {med.duration || '-'}</span>
+                                        {med.instructions ? <span className="ml-2">{med.instructions}</span> : null}
                                       </div>
                                     ))}
                                   </div>
-                                </div>
-                              )}
-
-                              {/* Remarks */}
-                              {full.remarks && (
-                                <div>
-                                  <p className="text-xs font-semibold text-slate-600">Remarks</p>
-                                  <p className="text-xs text-slate-600">{full.remarks}</p>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {patientPrescriptions.length > 5 ? (
-                      <div className="pt-1">
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => setShowAllPrescriptionHistory((prev) => !prev)}
-                        >
+                                  {full.remarks ? <p className="mt-2 text-xs text-slate-600">Remarks: {full.remarks}</p> : null}
+                                </motion.div>
+                              ) : null}
+                            </AnimatePresence>
+                          </div>
+                        );
+                      })}
+                      {patientPrescriptions.length > 5 ? (
+                        <Button size="sm" variant="doctorOutline" onClick={() => setShowAllPrescriptionHistory((prev) => !prev)}>
                           {showAllPrescriptionHistory ? 'Show Less' : `View More (${patientPrescriptions.length - 5} more)`}
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
+                        </Button>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              </Card>
 
-              {selectedQueuePatient.status === 'IN_CONSULTATION' ? (
-                <div className="rounded-xl border border-slate-200 bg-white p-3">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-slate-800">Create Prescription</p>
-                    <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-xs font-semibold text-violet-700">
-                      {prescriptionForm.medicines.length} medicines added
-                    </span>
-                  </div>
+              <Card className="border-violet-100/80 bg-white/85 p-5 shadow-md shadow-violet-100/40">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <h3 className="text-lg font-semibold text-slate-900">Prescription Generator</h3>
+                  <Badge variant="purple" className="normal-case tracking-normal">{prescriptionForm.medicines.length} medicines</Badge>
+                </div>
 
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <input
-                      type="text"
-                      placeholder="Diagnosis"
-                      value={prescriptionForm.diagnosis}
-                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, diagnosis: event.target.value }))}
-                    />
-                    <input
-                      type="text"
-                      placeholder="Temperature (e.g. 101F)"
-                      value={prescriptionForm.temperature}
-                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, temperature: event.target.value }))}
-                    />
-                    <input
-                      type="text"
-                      placeholder="Blood Pressure (e.g. 120/80)"
-                      value={prescriptionForm.bloodPressure}
-                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, bloodPressure: event.target.value }))}
-                    />
-                    <input
-                      type="text"
-                      placeholder="Clinical Notes"
-                      value={prescriptionForm.notes}
-                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, notes: event.target.value }))}
-                    />
+                {selectedQueuePatient.status !== 'IN_CONSULTATION' ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    Select patient in consultation state to generate prescription.
                   </div>
+                ) : (
+                  <>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Input placeholder="Diagnosis" value={prescriptionForm.diagnosis} onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, diagnosis: event.target.value }))} />
+                      <Input placeholder="Temperature (e.g. 101F)" value={prescriptionForm.temperature} onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, temperature: event.target.value }))} />
+                      <Input placeholder="Blood Pressure (e.g. 120/80)" value={prescriptionForm.bloodPressure} onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, bloodPressure: event.target.value }))} />
+                      <Input placeholder="Clinical Notes" value={prescriptionForm.notes} onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, notes: event.target.value }))} />
+                    </div>
 
-                  <div className="mt-3">
-                    <label className="mb-1 block text-xs font-medium text-slate-600">Search Medicine</label>
-                    <input
-                      type="text"
-                      placeholder="Type medicine name (min 2 letters)"
-                      value={medicineSearchText}
-                      onChange={(event) => setMedicineSearchText(event.target.value)}
-                    />
-                    {medicineSearchLoading ? <p className="mt-1 text-xs text-slate-500">Searching...</p> : null}
-                    {!medicineSearchLoading && medicineSearchError ? (
-                      <p className="mt-1 text-xs text-red-500">{medicineSearchError}</p>
-                    ) : null}
-                    {!medicineSearchLoading && !medicineSearchError && medicineSearchResults.length ? (
-                      <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2">
-                        {medicineSearchResults.map((item) => (
-                          <div key={item._id} className="mb-2 rounded-md border border-slate-200 bg-white p-2">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div>
-                                <p className="text-xs font-semibold text-slate-700">{item.name}</p>
-                                {Array.isArray(item.strength) && item.strength.length ? (
-                                  <p className="mt-1 text-xs text-slate-500">Strengths: {item.strength.slice(0, 6).join(', ')}</p>
-                                ) : null}
+                    <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-violet-700">Medicine Search</p>
+                      <Input placeholder="Type medicine name (min 2 letters)" value={medicineSearchText} onChange={(event) => setMedicineSearchText(event.target.value)} />
+                      {medicineSearchLoading ? <p className="mt-1 text-xs text-slate-500">Searching...</p> : null}
+                      {!medicineSearchLoading && medicineSearchError ? <p className="mt-1 text-xs text-red-500">{medicineSearchError}</p> : null}
+                      {!medicineSearchLoading && !medicineSearchError && medicineSearchResults.length ? (
+                        <div className="mt-2 max-h-44 space-y-2 overflow-y-auto pr-1">
+                          {medicineSearchResults.map((item) => (
+                            <div key={item._id} className="rounded-xl border border-violet-100 bg-white p-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-700">{item.name}</p>
+                                  {Array.isArray(item.strength) && item.strength.length ? <p className="text-xs text-slate-500">{item.strength.slice(0, 6).join(', ')}</p> : null}
+                                </div>
+                                <Button size="sm" variant="doctorOutline" onClick={() => addMedicineToPrescription(item)}>Add</Button>
                               </div>
-                              <button type="button" className="secondary" onClick={() => addMedicineToPrescription(item)}>Add</button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Input placeholder="Custom medicine name" value={customMedicineName} onChange={(event) => setCustomMedicineName(event.target.value)} className="w-full sm:max-w-xs" />
+                        <Button size="sm" variant="doctorOutline" onClick={addCustomMedicineToPrescription}>Add Custom</Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">Quick Defaults</p>
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        <div>
+                          <Input value={bulkFrequency} onChange={(event) => setBulkFrequency(event.target.value)} placeholder="Frequency" />
+                          <div className="mt-1 flex max-h-28 flex-wrap gap-1 overflow-y-auto pr-1">{QUICK_FREQUENCY_OPTIONS.map((opt) => <Button key={`freq-${opt}`} size="sm" variant="doctorOutline" className="px-2 py-1 text-xs" onClick={() => setBulkFrequency(opt)}>{opt}</Button>)}</div>
+                        </div>
+                        <div>
+                          <Input value={bulkDuration} onChange={(event) => setBulkDuration(event.target.value)} placeholder="Duration" />
+                          <div className="mt-1 flex max-h-28 flex-wrap gap-1 overflow-y-auto pr-1">{QUICK_DURATION_OPTIONS.map((opt) => <Button key={`duration-${opt}`} size="sm" variant="doctorOutline" className="px-2 py-1 text-xs" onClick={() => setBulkDuration(opt)}>{opt}</Button>)}</div>
+                        </div>
+                        <div>
+                          <Input value={bulkInstructions} onChange={(event) => setBulkInstructions(event.target.value)} placeholder="Instruction" />
+                          <div className="mt-1 flex max-h-28 flex-wrap gap-1 overflow-y-auto pr-1">{QUICK_INSTRUCTION_OPTIONS.map((opt) => <Button key={`instr-${opt}`} size="sm" variant="doctorOutline" className="px-2 py-1 text-xs" onClick={() => setBulkInstructions(opt)}>{opt}</Button>)}</div>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex justify-end">
+                        <Button size="sm" variant="doctorOutline" onClick={applyBulkDefaultsToAllMedicines} disabled={!prescriptionForm.medicines.length}>Apply Defaults To All</Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 space-y-2">
+                      {prescriptionForm.medicines.map((med, index) => (
+                        <motion.div key={`${med.medicineId}-${index}`} layout className="rounded-xl border border-violet-100 bg-violet-50/45 p-3">
+                          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-xs font-semibold text-slate-800">#{index + 1} {med.name}</p>
+                            <div className="flex flex-wrap gap-1">
+                              <Button size="sm" variant="doctorOutline" onClick={() => duplicatePrescriptionMedicine(index)}>Duplicate</Button>
+                              <Button size="sm" variant="doctorOutline" onClick={() => removePrescriptionMedicine(index)}>Remove</Button>
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <input
-                        type="text"
-                        placeholder="Custom medicine name"
-                        value={customMedicineName}
-                        onChange={(event) => setCustomMedicineName(event.target.value)}
-                      />
-                      <button type="button" className="secondary" onClick={addCustomMedicineToPrescription}>Add Custom</button>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-2">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">Quick Defaults</p>
-                    <div className="grid gap-2 sm:grid-cols-3">
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-600">Frequency</label>
-                        <input value={bulkFrequency} onChange={(event) => setBulkFrequency(event.target.value)} placeholder="1-0-1" />
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {QUICK_FREQUENCY_OPTIONS.map((opt) => (
-                            <button key={`freq-${opt}`} type="button" className="secondary" onClick={() => setBulkFrequency(opt)}>{opt}</button>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-600">Duration</label>
-                        <input value={bulkDuration} onChange={(event) => setBulkDuration(event.target.value)} placeholder="5 days" />
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {QUICK_DURATION_OPTIONS.map((opt) => (
-                            <button key={`duration-${opt}`} type="button" className="secondary" onClick={() => setBulkDuration(opt)}>{opt}</button>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-600">Instruction</label>
-                        <input value={bulkInstructions} onChange={(event) => setBulkInstructions(event.target.value)} placeholder="After food" />
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {QUICK_INSTRUCTION_OPTIONS.map((opt) => (
-                            <button key={`instr-${opt}`} type="button" className="secondary" onClick={() => setBulkInstructions(opt)}>{opt}</button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-2 flex justify-end">
-                      <button type="button" className="secondary" onClick={applyBulkDefaultsToAllMedicines} disabled={!prescriptionForm.medicines.length}>
-                        Apply Defaults To All Medicines
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 space-y-2">
-                    {prescriptionForm.medicines.map((med, index) => (
-                      <div key={`${med.medicineId}-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
-                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                          <p className="text-xs font-semibold text-slate-700">#{index + 1} {med.name}</p>
-                          <div className="flex flex-wrap gap-1">
-                            <button type="button" className="secondary" onClick={() => duplicatePrescriptionMedicine(index)}>Duplicate</button>
-                            <button type="button" className="secondary" onClick={() => removePrescriptionMedicine(index)}>Remove</button>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <Input placeholder="Dosage" value={med.dosage || ''} onChange={(event) => updatePrescriptionMedicine(index, 'dosage', event.target.value)} />
+                            <Input placeholder="Frequency" value={med.frequency || ''} onChange={(event) => updatePrescriptionMedicine(index, 'frequency', event.target.value)} />
+                            <Input placeholder="Duration" value={med.duration || ''} onChange={(event) => updatePrescriptionMedicine(index, 'duration', event.target.value)} />
+                            <Input placeholder="Instructions" value={med.instructions || ''} onChange={(event) => updatePrescriptionMedicine(index, 'instructions', event.target.value)} />
                           </div>
-                        </div>
-                        <div className="grid gap-2 sm:grid-cols-4">
-                          <input type="text" placeholder="Dosage" value={med.dosage || ''} onChange={(event) => updatePrescriptionMedicine(index, 'dosage', event.target.value)} />
-                          <input type="text" placeholder="Frequency" value={med.frequency || ''} onChange={(event) => updatePrescriptionMedicine(index, 'frequency', event.target.value)} />
-                          <input type="text" placeholder="Duration" value={med.duration || ''} onChange={(event) => updatePrescriptionMedicine(index, 'duration', event.target.value)} />
-                          <input type="text" placeholder="Instructions" value={med.instructions || ''} onChange={(event) => updatePrescriptionMedicine(index, 'instructions', event.target.value)} />
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {QUICK_FREQUENCY_OPTIONS.map((opt) => (
-                            <button key={`med-f-${index}-${opt}`} type="button" className="secondary" onClick={() => updatePrescriptionMedicine(index, 'frequency', opt)}>{opt}</button>
-                          ))}
-                          {QUICK_DURATION_OPTIONS.map((opt) => (
-                            <button key={`med-d-${index}-${opt}`} type="button" className="secondary" onClick={() => updatePrescriptionMedicine(index, 'duration', opt)}>{opt}</button>
-                          ))}
-                          {QUICK_INSTRUCTION_OPTIONS.map((opt) => (
-                            <button key={`med-i-${index}-${opt}`} type="button" className="secondary" onClick={() => updatePrescriptionMedicine(index, 'instructions', opt)}>{opt}</button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                          <div className="mt-2 flex max-h-28 flex-wrap gap-1 overflow-y-auto pr-1">
+                            {QUICK_FREQUENCY_OPTIONS.map((opt) => <Button key={`med-f-${index}-${opt}`} size="sm" variant="doctorOutline" className="px-2 py-1 text-xs" onClick={() => updatePrescriptionMedicine(index, 'frequency', opt)}>{opt}</Button>)}
+                            {QUICK_DURATION_OPTIONS.map((opt) => <Button key={`med-d-${index}-${opt}`} size="sm" variant="doctorOutline" className="px-2 py-1 text-xs" onClick={() => updatePrescriptionMedicine(index, 'duration', opt)}>{opt}</Button>)}
+                            {QUICK_INSTRUCTION_OPTIONS.map((opt) => <Button key={`med-i-${index}-${opt}`} size="sm" variant="doctorOutline" className="px-2 py-1 text-xs" onClick={() => updatePrescriptionMedicine(index, 'instructions', opt)}>{opt}</Button>)}
+                          </div>
+                        </motion.div>
+                      ))}
+                    </div>
 
-                  <div className="mt-3">
-                    <textarea
-                      rows={3}
-                      placeholder="Doctor remarks"
-                      value={prescriptionForm.remarks}
-                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, remarks: event.target.value }))}
-                    />
-                  </div>
+                    <div className="mt-3">
+                      <Textarea rows={3} placeholder="Doctor remarks" value={prescriptionForm.remarks} onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, remarks: event.target.value }))} />
+                    </div>
 
-                  <div className="mt-3 flex justify-end">
-                    <button type="button" onClick={handleGeneratePrescription} disabled={prescriptionSubmitting}>
-                      {prescriptionSubmitting ? 'Generating...' : 'Generate Prescription'}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
+                    <div className="mt-3 flex justify-end">
+                      <Button variant="doctor" onClick={handleGeneratePrescription} disabled={prescriptionSubmitting}>{prescriptionSubmitting ? 'Generating...' : 'Generate Prescription'}</Button>
+                    </div>
+                  </>
+                )}
+              </Card>
+            </motion.div>
+          ) : (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-2xl border border-dashed border-violet-200 bg-white/60 p-10 text-center text-sm text-slate-500">
+              Select a patient card to open the detail panel.
+            </motion.div>
           )}
-        </article>
+        </AnimatePresence>
       </section>
     );
   }
 
   function renderAppointments() {
     return (
-      <section className="card space-y-4">
-        <h2 className="text-xl font-semibold text-slate-900">Appointments</h2>
-        <div className="space-y-3">
-          {!appointments.length && <p className="text-sm text-slate-500">No booked appointments found for upcoming days.</p>}
-          {appointments.map((item) => {
+      <section className="space-y-4">
+        <Card className="border-violet-100/80 bg-white/85 p-5 shadow-md shadow-violet-100/40">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-xl font-semibold text-slate-900">Appointments</h2>
+            <Badge variant="purple" className="normal-case tracking-normal">{filteredAppointments.length} scheduled</Badge>
+          </div>
+          <div className="space-y-3">
+          {!filteredAppointments.length && <p className="text-sm text-slate-500">No booked appointments found for upcoming days.</p>}
+          {filteredAppointments.map((item, index) => {
             const state = appointmentsState[item.id] || {};
             const status = state.status || item.status || 'upcoming';
             return (
-              <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <motion.div key={item.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.03 }} whileHover={{ y: -3 }} className="rounded-2xl border border-violet-100 bg-gradient-to-r from-white to-violet-50/45 p-4 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-slate-800">{item.displayDate} {item.time} - {item.patient?.name || 'Patient'}</p>
-                  <span className="text-xs uppercase tracking-wide text-slate-500">{status}</span>
+                  <p className="text-sm font-semibold text-slate-800">{formatAppointmentDateTime(item.displayDate, item.time)} - {item.patient?.name || 'Patient'}</p>
+                  <Badge variant="slate" className="normal-case tracking-normal">{status}</Badge>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" onClick={() => updateAppointmentStatus(item.id, 'completed')}>Complete Visit</button>
-                  <button type="button" className="secondary" onClick={() => updateAppointmentStatus(item.id, 'rescheduled')}>Reschedule</button>
+                  <Button size="sm" variant="doctor" onClick={() => updateAppointmentStatus(item.id, 'completed')}>Complete Visit</Button>
+                  <Button size="sm" variant="doctorOutline" onClick={() => updateAppointmentStatus(item.id, 'rescheduled')}>Reschedule</Button>
                 </div>
                 <div className="mt-3">
-                  <textarea
+                  <Textarea
                     rows={2}
                     placeholder="Add consultation note"
                     value={appointmentNotes[item.id] || ''}
                     onChange={(event) => setAppointmentNotes((prev) => ({ ...prev, [item.id]: event.target.value }))}
                   />
-                  <button type="button" className="mt-2" onClick={() => saveAppointmentNote(item.id)}>Save Note</button>
+                  <Button type="button" size="sm" variant="doctor" className="mt-2" onClick={() => saveAppointmentNote(item.id)}>Save Note</Button>
                 </div>
-              </div>
+              </motion.div>
             );
           })}
-        </div>
+          </div>
+        </Card>
       </section>
     );
   }
@@ -1234,34 +1401,36 @@ export default function DoctorPortalPage() {
       const selectedDateMeta = formatDateWithDay(selectedDate);
 
     return (
-      <section className="card space-y-4">
+      <section className="space-y-4">
+        <Card className="space-y-4 border-violet-100/80 bg-white/85 shadow-md shadow-violet-100/40">
           <h2 className="text-xl font-semibold text-slate-900">Availability Scheduler</h2>
           <p className="text-sm text-slate-600">Define shift, appointment window, slot duration, and breaks. Slots auto-generate and update in real time.</p>
 
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="rounded-xl border border-violet-100 bg-violet-50/45 p-4">
             <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Daywise View (Next 7 Days)</p>
             <div className="flex flex-wrap gap-2">
               {daywiseOptions.map((option) => {
                 const active = option.value === selectedDate;
                 return (
-                  <button
+                  <Button
                     key={option.value}
                     type="button"
-                    className={active ? '' : 'secondary'}
+                    size="sm"
+                    variant={active ? 'doctor' : 'doctorOutline'}
                     onClick={() => setAvailabilityDate(option.value)}
                   >
                     {option.day} {option.shortDate}
-                  </button>
+                  </Button>
                 );
               })}
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="rounded-xl border border-violet-100 bg-white p-4">
             <div className="mb-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Date (next 7 days)</label>
-                <select value={availabilityDate} onChange={(event) => setAvailabilityDate(event.target.value)}>
+                <select className="h-10 w-full rounded-xl border border-violet-200 bg-white px-3 text-sm text-slate-700" value={availabilityDate} onChange={(event) => setAvailabilityDate(event.target.value)}>
                   {daywiseOptions.map((date) => (
                     <option key={date.value} value={date.value}>{date.day} {date.shortDate}</option>
                   ))}
@@ -1269,31 +1438,32 @@ export default function DoctorPortalPage() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Shift Start</label>
-                <input type="time" value={scheduleForm.shiftStart} onChange={(e) => setScheduleForm((p) => ({ ...p, shiftStart: e.target.value }))} />
+                <Input type="time" value={scheduleForm.shiftStart} onChange={(e) => setScheduleForm((p) => ({ ...p, shiftStart: e.target.value }))} />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Shift End</label>
-                <input type="time" value={scheduleForm.shiftEnd} onChange={(e) => setScheduleForm((p) => ({ ...p, shiftEnd: e.target.value }))} />
+                <Input type="time" value={scheduleForm.shiftEnd} onChange={(e) => setScheduleForm((p) => ({ ...p, shiftEnd: e.target.value }))} />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Slot Duration (min)</label>
-                <input type="number" min="5" max="180" value={scheduleForm.slotDuration} onChange={(e) => setScheduleForm((p) => ({ ...p, slotDuration: e.target.value }))} />
+                <Input type="number" min="5" max="180" value={scheduleForm.slotDuration} onChange={(e) => setScheduleForm((p) => ({ ...p, slotDuration: e.target.value }))} />
               </div>
             </div>
 
             <div className="mb-3 grid gap-3 sm:grid-cols-2">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Appointment Start</label>
-                <input type="time" value={scheduleForm.appointmentStart} onChange={(e) => setScheduleForm((p) => ({ ...p, appointmentStart: e.target.value }))} />
+                <Input type="time" value={scheduleForm.appointmentStart} onChange={(e) => setScheduleForm((p) => ({ ...p, appointmentStart: e.target.value }))} />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Appointment End</label>
-                <input type="time" value={scheduleForm.appointmentEnd} onChange={(e) => setScheduleForm((p) => ({ ...p, appointmentEnd: e.target.value }))} />
+                <Input type="time" value={scheduleForm.appointmentEnd} onChange={(e) => setScheduleForm((p) => ({ ...p, appointmentEnd: e.target.value }))} />
               </div>
             </div>
 
             <div className="flex flex-wrap gap-2">
-              <button
+              <Button
+                variant="doctor"
                 type="button"
                 onClick={async () => {
                   if (!doctor?.id || !token) return;
@@ -1315,10 +1485,10 @@ export default function DoctorPortalPage() {
                 }}
               >
                 Save Schedule
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="secondary"
+                variant="doctorOutline"
                 onClick={async () => {
                   if (!doctor?.id || !token) return;
                   try {
@@ -1331,34 +1501,35 @@ export default function DoctorPortalPage() {
                 }}
               >
                 Delete Schedule
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="secondary"
+                variant="doctorOutline"
                 onClick={async () => {
                   await refreshAvailabilityData();
                 }}
               >
                 Refresh Day Data
-              </button>
+              </Button>
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="rounded-xl border border-violet-100 bg-white p-4">
             <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Break Controls</h3>
-            <p className="mb-3 mt-1 text-sm text-slate-600">Slider-style break concept: define break range within appointment window.</p>
+            <p className="mb-3 mt-1 text-sm text-slate-600">Define break ranges within the appointment window.</p>
 
             <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Break Start</label>
-                <input type="time" value={breakForm.breakStart} onChange={(e) => setBreakForm((p) => ({ ...p, breakStart: e.target.value }))} />
+                <Input type="time" value={breakForm.breakStart} onChange={(e) => setBreakForm((p) => ({ ...p, breakStart: e.target.value }))} />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Break End</label>
-                <input type="time" value={breakForm.breakEnd} onChange={(e) => setBreakForm((p) => ({ ...p, breakEnd: e.target.value }))} />
+                <Input type="time" value={breakForm.breakEnd} onChange={(e) => setBreakForm((p) => ({ ...p, breakEnd: e.target.value }))} />
               </div>
               <div className="flex items-end">
-                <button
+                <Button
+                  variant="doctor"
                   type="button"
                   className="w-full"
                   onClick={async () => {
@@ -1387,22 +1558,23 @@ export default function DoctorPortalPage() {
                   }}
                 >
                   {editingBreakId ? 'Update Break' : 'Add Break'}
-                </button>
+                </Button>
               </div>
             </div>
 
             {editingBreakId ? (
               <div className="mt-2">
-                <button
+                <Button
                   type="button"
-                  className="secondary"
+                  size="sm"
+                  variant="doctorOutline"
                   onClick={() => {
                     setEditingBreakId('');
                     setBreakForm({ breakStart: '11:00', breakEnd: '11:20' });
                   }}
                 >
                   Cancel Break Edit
-                </button>
+                </Button>
               </div>
             ) : null}
 
@@ -1413,19 +1585,21 @@ export default function DoctorPortalPage() {
                 <div key={item._id || item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                   <p className="text-sm font-semibold text-slate-800">{item.breakStart} - {item.breakEnd}</p>
                   <div className="flex flex-wrap gap-2">
-                    <button
+                    <Button
                       type="button"
-                      className="secondary"
+                      size="sm"
+                      variant="doctorOutline"
                       onClick={() => {
                         setEditingBreakId(item._id || item.id);
                         setBreakForm({ breakStart: item.breakStart, breakEnd: item.breakEnd });
                       }}
                     >
                       Edit
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       type="button"
-                      className="secondary"
+                      size="sm"
+                      variant="doctorOutline"
                       onClick={async () => {
                         try {
                           await deleteDoctorBreak(item._id || item.id, token);
@@ -1437,44 +1611,38 @@ export default function DoctorPortalPage() {
                       }}
                     >
                       Delete
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ))}
             </div>
 
-            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline Concept</p>
-              <div className="mt-2 h-5 w-full rounded-full bg-violet-100">
-                <div className="h-5 rounded-full bg-violet-500" style={{ width: '70%' }} />
-              </div>
-              <p className="mt-1 text-xs text-slate-500">Purple bar: appointment window. Add breaks to carve blocked segments.</p>
-            </div>
           </div>
 
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="rounded-xl border border-violet-100 bg-violet-50/45 p-4">
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Generated Slots</h3>
             <p className="mb-3 text-sm text-slate-600">Viewing slots for {selectedDateMeta.full}</p>
 
             <div className="mb-3 grid gap-3 sm:grid-cols-4">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Custom Slot Start</label>
-                <input type="time" value={slotForm.startTime} onChange={(e) => setSlotForm((prev) => ({ ...prev, startTime: e.target.value }))} />
+                <Input type="time" value={slotForm.startTime} onChange={(e) => setSlotForm((prev) => ({ ...prev, startTime: e.target.value }))} />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Custom Slot End</label>
-                <input type="time" value={slotForm.endTime} onChange={(e) => setSlotForm((prev) => ({ ...prev, endTime: e.target.value }))} />
+                <Input type="time" value={slotForm.endTime} onChange={(e) => setSlotForm((prev) => ({ ...prev, endTime: e.target.value }))} />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Status</label>
-                <select value={slotForm.status} onChange={(e) => setSlotForm((prev) => ({ ...prev, status: e.target.value }))}>
+                <select className="h-10 w-full rounded-xl border border-violet-200 bg-white px-3 text-sm text-slate-700" value={slotForm.status} onChange={(e) => setSlotForm((prev) => ({ ...prev, status: e.target.value }))}>
                   <option value="AVAILABLE">AVAILABLE</option>
                   <option value="BLOCKED">BLOCKED</option>
                   <option value="BOOKED">BOOKED</option>
                 </select>
               </div>
               <div className="flex items-end">
-                <button
+                <Button
+                  variant="doctor"
                   type="button"
                   className="w-full"
                   onClick={async () => {
@@ -1505,22 +1673,23 @@ export default function DoctorPortalPage() {
                   }}
                 >
                   {editingSlotId ? 'Update Slot' : 'Add Slot'}
-                </button>
+                </Button>
               </div>
             </div>
 
             {editingSlotId ? (
               <div className="mb-3">
-                <button
+                <Button
                   type="button"
-                  className="secondary"
+                  size="sm"
+                  variant="doctorOutline"
                   onClick={() => {
                     setEditingSlotId('');
                     setSlotForm({ startTime: '10:00', endTime: '10:20', status: 'AVAILABLE' });
                   }}
                 >
                   Cancel Slot Edit
-                </button>
+                </Button>
               </div>
             ) : null}
 
@@ -1543,9 +1712,10 @@ export default function DoctorPortalPage() {
                       {slot.status}
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <button
+                      <Button
                         type="button"
-                        className="secondary"
+                        size="sm"
+                        variant="doctorOutline"
                         onClick={() => {
                           setEditingSlotId(slot.slotId);
                           setSlotForm({
@@ -1556,10 +1726,11 @@ export default function DoctorPortalPage() {
                         }}
                       >
                         Edit
-                      </button>
-                      <button
+                      </Button>
+                      <Button
                         type="button"
-                        className="secondary"
+                        size="sm"
+                        variant="doctorOutline"
                         onClick={async () => {
                           try {
                             await deleteDoctorSlot(slot.slotId, token);
@@ -1571,13 +1742,14 @@ export default function DoctorPortalPage() {
                         }}
                       >
                         Delete
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ))}
             </div>
             )}
         </div>
+        </Card>
       </section>
     );
   }
@@ -1588,7 +1760,8 @@ export default function DoctorPortalPage() {
     const totals = doctorHistory?.totals || { totalVisits: 0, totalPatientsTreated: 0, treatedToday: 0 };
 
     return (
-      <section className="card space-y-4">
+      <section className="space-y-4">
+        <Card className="space-y-4 border-violet-100/80 bg-white/85 shadow-md shadow-violet-100/40">
         <h2 className="text-xl font-semibold text-slate-900">Patient History</h2>
 
         <div className="grid gap-3 sm:grid-cols-3">
@@ -1606,7 +1779,7 @@ export default function DoctorPortalPage() {
           </div>
         </div>
 
-        <article className="rounded-xl border border-slate-200 bg-white p-3">
+        <article className="rounded-2xl border border-violet-100 bg-white p-4">
           <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">Treated Patients</h3>
           {!treatedPatients.length ? (
             <p className="text-sm text-slate-500">No treated patients found yet.</p>
@@ -1638,30 +1811,32 @@ export default function DoctorPortalPage() {
           )}
         </article>
 
-        <article className="rounded-xl border border-slate-200 bg-white p-3">
+        <article className="rounded-2xl border border-violet-100 bg-white p-4">
           <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">Recent Visits / Treatments</h3>
           {!visits.length && <p className="text-sm text-slate-500">No visit records available yet.</p>}
           {!!visits.length && (
           <div className="space-y-2">
-            {visits.map((visit) => (
-              <div key={visit.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            {visits.map((visit, index) => (
+              <motion.div key={visit.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.02 }} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="text-sm font-semibold text-slate-800">{new Date(visit.visitDate).toLocaleDateString()} - {visit.patientName || 'Patient'}</p>
                 <p className="text-xs text-slate-600">Chief Complaint: {visit.chiefComplaint || '-'}</p>
                 <p className="text-xs text-slate-600">Diagnosis: {visit.diagnosis || 'Pending'}</p>
                 <p className="text-xs text-slate-600">Treatment: {visit.treatment || 'No treatment notes'}</p>
                 <p className="text-xs text-slate-600">Doctor Notes: {visit.doctorNotes || '-'}</p>
-              </div>
+              </motion.div>
             ))}
           </div>
           )}
         </article>
+        </Card>
       </section>
     );
   }
 
   function renderProfile() {
     return (
-      <section className="card space-y-4">
+      <section className="space-y-4">
+        <Card className="space-y-4 border-violet-100/80 bg-white/85 shadow-md shadow-violet-100/40">
         <h2 className="text-xl font-semibold text-slate-900">Profile</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -1689,46 +1864,10 @@ export default function DoctorPortalPage() {
             <p className="text-sm font-semibold text-slate-800">{profile?.yearsOfExperience ?? 'Not available'} years</p>
           </div>
         </div>
+        </Card>
       </section>
     );
   }
-
-  function renderNotifications() {
-    const liveNotifs = notifications.length
-      ? notifications
-      : [
-          { id: 'n1', level: 'critical', text: 'Critical patient arrived' },
-          { id: 'n2', level: 'medium', text: 'Appointment starting soon' },
-          { id: 'n3', level: 'low', text: 'New triage case assigned' }
-        ];
-
-    return (
-      <section className="card space-y-4">
-        <h2 className="text-xl font-semibold text-slate-900">Notifications</h2>
-        <div className="space-y-2">
-          {liveNotifs.map((notification) => (
-            <div key={notification.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-              <div className="mb-1">{priorityBadge(normalizePriority(notification.level))}</div>
-              <p>{notification.text}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-    );
-  }
-
-  useEffect(() => {
-    if (!dashboard) return;
-
-    const top = (dashboard.currentQueue?.patients || []).map(queueRowFromRaw).find((item) => item.urgency === 'critical' || item.urgency === 'high');
-    if (!top) return;
-
-    const id = `queue-${top.id}-${top.score}`;
-    setNotifications((prev) => {
-      if (prev.some((item) => item.id === id)) return prev;
-      return [{ id, level: top.urgency, text: `New ${top.urgency.toUpperCase()} priority patient: ${top.name}` }, ...prev].slice(0, 15);
-    });
-  }, [dashboard]);
 
   function renderContent() {
     if (activeNav === 'Dashboard') return renderDashboard();
@@ -1736,48 +1875,136 @@ export default function DoctorPortalPage() {
     if (activeNav === 'Appointments') return renderAppointments();
     if (activeNav === 'Availability') return renderAvailability();
     if (activeNav === 'Patient History') return renderHistory();
-    if (activeNav === 'Profile') return renderProfile();
-    return renderNotifications();
+    return renderProfile();
+  }
+
+  function renderSidebarContent(isMobile = false) {
+    const collapsed = isMobile ? false : sidebarCollapsed;
+
+    return (
+      <>
+      <div className="mb-6 flex items-center justify-between gap-2">
+        <div>
+          {!collapsed ? <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-600">Doctor Workspace</p> : null}
+          {!collapsed ? <h1 className="text-lg font-semibold text-slate-900">Jeeva</h1> : null}
+        </div>
+        <Button size="sm" variant="doctorGhost" className={`hidden lg:inline-flex ${isMobile ? 'hidden' : ''}`} onClick={() => setSidebarCollapsed((prev) => !prev)}>
+          {collapsed ? <FiMenu size={16} /> : <FiX size={16} />}
+        </Button>
+      </div>
+
+      <nav className={`space-y-1 ${collapsed ? 'mt-3' : ''}`}>
+        {NAV_ITEMS.map((item) => {
+          const Icon = NAV_ICONS[item];
+          const active = activeNav === item;
+          return (
+            <motion.button
+              whileHover={{ x: collapsed ? 0 : 2 }}
+              key={item}
+              type="button"
+              title={collapsed ? item : undefined}
+              className={`group flex w-full items-center rounded-xl text-sm transition ${collapsed ? 'justify-center px-2 py-2.5' : 'gap-3 px-3 py-2'} ${active ? 'bg-violet-100 text-violet-700' : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'}`}
+              onClick={() => {
+                setActiveNav(item);
+                setMobileSidebarOpen(false);
+              }}
+            >
+              <Icon size={17} />
+              {!collapsed ? <span>{item}</span> : null}
+              {!collapsed && active ? <span className="ml-auto h-2 w-2 rounded-full bg-violet-500" /> : null}
+            </motion.button>
+          );
+        })}
+      </nav>
+
+      <div className="mt-6 border-t border-violet-100 pt-4">
+        <Button variant={isMobile ? 'doctorOutline' : 'doctor'} className={`w-full ${collapsed ? 'px-2' : ''}`} onClick={() => loadPortalData(false)} disabled={loading}>
+          {collapsed ? 'Sync' : loading ? 'Refreshing...' : 'Sync Now'}
+        </Button>
+        <Button className="mt-2 w-full" variant="doctorOutline" onClick={handleLogout}><FiLogOut size={14} /> {!collapsed ? 'Logout' : 'Sign out'}</Button>
+      </div>
+      </>
+    );
   }
 
   return (
-    <main className="container">
-      <section className="grid gap-6 lg:grid-cols-[250px_1fr]">
-        <aside className="card h-fit">
-          <div className="mb-5">
-            <p className="text-xs uppercase tracking-[0.14em] text-violet-700">Doctor Portal</p>
-            <h1 className="mt-1 text-xl font-semibold text-slate-900">Fast Situational Awareness</h1>
-          </div>
+    <main className="min-h-screen bg-slate-50">
+      <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_top_left,_rgba(124,58,237,0.16),_transparent_40%),radial-gradient(circle_at_bottom_right,_rgba(99,102,241,0.14),_transparent_35%)]" />
 
-          <nav className="space-y-1">
-            {NAV_ITEMS.map((item) => (
-              <button
-                key={item}
-                type="button"
-                className={`w-full text-left ${activeNav === item ? '' : 'secondary'}`}
-                onClick={() => {
-                  setActiveNav(item);
-                  toast.success(`${item} opened`);
-                }}
+      <div className="mx-auto grid min-h-screen max-w-[1600px] grid-cols-1 gap-0 lg:grid-cols-[auto_1fr]">
+        <motion.aside
+          animate={{ width: sidebarCollapsed ? 92 : 270 }}
+          transition={{ type: 'spring', stiffness: 260, damping: 24 }}
+          className="sticky top-0 hidden h-screen border-r border-violet-100 bg-white/80 p-4 backdrop-blur lg:block"
+        >
+          {renderSidebarContent(false)}
+        </motion.aside>
+
+        <AnimatePresence>
+          {mobileSidebarOpen ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-slate-900/40 lg:hidden"
+              onClick={() => setMobileSidebarOpen(false)}
+            >
+              <motion.aside
+                initial={{ x: -280 }}
+                animate={{ x: 0 }}
+                exit={{ x: -280 }}
+                transition={{ type: 'spring', stiffness: 260, damping: 24 }}
+                className="h-full w-[280px] bg-white p-4"
+                onClick={(event) => event.stopPropagation()}
               >
-                {item}
-              </button>
-            ))}
-          </nav>
+                <div className="mb-3 flex justify-end">
+                  <Button size="sm" variant="doctorGhost" onClick={() => setMobileSidebarOpen(false)}><FiX size={16} /></Button>
+                </div>
+                {renderSidebarContent(true)}
+              </motion.aside>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
 
-          <div className="mt-5 border-t border-slate-200 pt-4">
-            <button type="button" className="w-full" onClick={() => loadPortalData(false)} disabled={loading}>
-              {loading ? 'Refreshing...' : 'Sync Now'}
-            </button>
-            <button type="button" className="secondary mt-2 w-full" onClick={handleLogout}>Logout</button>
-          </div>
-        </aside>
+        <section className="p-4 sm:p-6">
+          <Card className="mb-5 border-violet-100/80 bg-white/80 p-4 shadow-sm shadow-violet-100/60">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+              <Button variant="doctorGhost" size="sm" className="lg:hidden" onClick={() => setMobileSidebarOpen(true)}><FiMenu size={18} /></Button>
+              <div className="relative min-w-[220px] flex-1">
+                <FiSearch className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
+                <Input className="pl-9" placeholder="Search patients, appointments, symptoms" value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} />
+              </div>
+              <Button variant="doctorGradient" size="sm" className="w-full sm:w-auto" onClick={handleCallNextPatient}>Call Next Patient</Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button type="button" className="rounded-full">
+                    <Avatar>
+                      {profile?.avatarUrl || doctor?.avatar ? <AvatarImage src={profile?.avatarUrl || doctor?.avatar} alt={doctor?.name || 'Doctor'} /> : null}
+                      <AvatarFallback>{String(doctor?.name || 'DR').slice(0, 2).toUpperCase()}</AvatarFallback>
+                    </Avatar>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuLabel>{doctor?.name || 'Doctor'}</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => setActiveNav('Profile')}>Open Profile</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={handleLogout}>Sign Out</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </Card>
 
-        <section className="space-y-4">
-          {loading && <p className="text-sm text-slate-500">Loading doctor portal...</p>}
-          {!loading && renderContent()}
+          {loading ? <p className="text-sm text-slate-500">Loading doctor portal...</p> : null}
+          {!loading ? (
+            <AnimatePresence mode="wait">
+              <motion.div key={activeNav} initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.2 }}>
+                {renderContent()}
+              </motion.div>
+            </AnimatePresence>
+          ) : null}
         </section>
-      </section>
+      </div>
     </main>
   );
 }
+

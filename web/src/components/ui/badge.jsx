@@ -1,7 +1,7 @@
 import { cn } from '../../lib/utils';
 
 const variants = {
-  default: 'bg-accent-100 text-accent-800',
+  default: 'bg-violet-100 text-violet-700',
   blue: 'bg-blue-100 text-blue-700',
   purple: 'bg-purple-100 text-purple-700',
   orange: 'bg-orange-100 text-orange-700',

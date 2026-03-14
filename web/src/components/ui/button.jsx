@@ -6,6 +6,10 @@ const variants = {
   ghost: 'text-slate-700 hover:text-accent-700 hover:bg-accent-50',
   dark: 'bg-slate-900 text-white hover:bg-slate-800 shadow-md',
   gradient: 'bg-gradient-to-r from-accent-600 to-accent-700 text-white hover:from-accent-700 hover:to-accent-800 shadow-lg shadow-accent-700/20',
+  doctor: 'bg-violet-600 text-white hover:bg-violet-700 shadow-md hover:shadow-lg shadow-violet-600/20',
+  doctorOutline: 'border border-violet-600 text-violet-700 bg-white hover:bg-violet-50',
+  doctorGhost: 'text-slate-700 hover:text-violet-700 hover:bg-violet-50',
+  doctorGradient: 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white hover:from-violet-700 hover:to-indigo-700 shadow-lg shadow-violet-700/20',
   soft: 'border border-white/30 bg-white/10 text-white hover:bg-white/15',
 };
 

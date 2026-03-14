@@ -26,8 +26,8 @@
   }
 
   ::selection {
-    background-color: rgba(63, 159, 118, 0.2);
-    color: #1f4232;
+    background-color: rgba(139, 92, 246, 0.22);
+    color: #312e81;
   }
 
   input, select, button, textarea {
@@ -39,7 +39,7 @@
   }
 
   input:focus, select:focus, textarea:focus {
-    @apply border-accent-400 ring-2 ring-accent-100;
+    @apply border-violet-400 ring-2 ring-violet-100;
   }
 
   button {
@@ -71,7 +71,7 @@
   }
 
   .badge {
-    @apply inline-block rounded-full bg-accent-100 px-2.5 py-1 text-xs font-medium text-accent-800;
+    @apply inline-block rounded-full bg-violet-100 px-2.5 py-1 text-xs font-medium text-violet-700;
   }
 
   .error {
@@ -79,6 +79,6 @@
   }
 
   .success {
-    @apply text-emerald-700;
+    @apply text-violet-700;
   }
 }

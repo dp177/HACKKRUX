@@ -84,15 +84,15 @@ export default function PlatformOverview() {
               transition={{ duration: 0.5, delay: i * 0.1 }}
               whileHover={{ y: -6, transition: { duration: 0.2 } }}
             >
-              <GlassCard className={`group h-full ${card.cardBg} border-slate-200/60 hover:border-slate-300 hover:shadow-2xl transition-all duration-300 cursor-default`}>
-                {/* Icon */}
-                <div className={`mb-5 inline-flex h-12 w-12 items-center justify-center rounded-xl ${card.iconBg} shadow-lg shadow-accent-600/20`}>
-                  <card.icon className="h-6 w-6 text-white" />
+              <GlassCard className={`group flex h-full flex-col ${card.cardBg} border-slate-200/60 hover:border-slate-300 hover:shadow-2xl transition-all duration-300 cursor-default`}>
+                <div className="mb-5 flex items-center gap-3">
+                  <div className={`inline-flex h-12 w-12 items-center justify-center rounded-xl ${card.iconBg} shadow-lg shadow-accent-600/20`}>
+                    <card.icon className="h-6 w-6 text-white" />
+                  </div>
+                  <Badge variant={card.badgeVariant}>
+                    {card.badge}
+                  </Badge>
                 </div>
-
-                <Badge variant={card.badgeVariant} className="mb-3">
-                  {card.badge}
-                </Badge>
 
                 <h3 className="mb-3 text-xl font-bold tracking-tight text-slate-900">
                   {card.title}
@@ -103,7 +103,7 @@ export default function PlatformOverview() {
 
                 <a
                   href={card.link}
-                  className="inline-flex items-center gap-1 text-sm font-semibold text-accent-700 hover:gap-2 transition-all"
+                  className="mt-auto inline-flex items-center gap-1 text-sm font-semibold text-accent-700 hover:gap-2 transition-all"
                 >
                   Learn more <RiArrowRightLine className="h-4 w-4" />
                 </a>

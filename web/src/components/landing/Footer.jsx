@@ -2,10 +2,6 @@
 
 import {
   RiHeartPulseLine,
-  RiTwitterXLine,
-  RiLinkedinBoxFill,
-  RiGithubFill,
-  RiInstagramLine,
 } from 'react-icons/ri';
 
 const footerLinks = {
@@ -13,42 +9,15 @@ const footerLinks = {
     { label: 'AI Triage Engine', href: '#features' },
     { label: 'Doctor Portal', href: '/doctor-signin' },
     { label: 'Hospital Portal', href: '/hospital-portal' },
-    { label: 'Mobile App', href: '#' },
-    { label: 'Admin Dashboard', href: '#' },
-  ],
-  Company: [
-    { label: 'About Us', href: '#' },
-    { label: 'Careers', href: '#' },
-    { label: 'Press', href: '#' },
-    { label: 'Contact', href: '#' },
-  ],
-  Resources: [
-    { label: 'Documentation', href: '#' },
-    { label: 'API Reference', href: '#' },
-    { label: 'Blog', href: '#' },
-    { label: 'Case Studies', href: '#' },
-  ],
-  Legal: [
-    { label: 'Privacy Policy', href: '#' },
-    { label: 'Terms of Service', href: '#' },
-    { label: 'HIPAA Compliance', href: '#' },
-    { label: 'Cookie Policy', href: '#' },
   ],
 };
-
-const socials = [
-  { icon: RiTwitterXLine, href: '#', label: 'Twitter' },
-  { icon: RiLinkedinBoxFill, href: '#', label: 'LinkedIn' },
-  { icon: RiGithubFill, href: '#', label: 'GitHub' },
-  { icon: RiInstagramLine, href: '#', label: 'Instagram' },
-];
 
 export default function Footer() {
   return (
     <footer className="border-t border-slate-200 bg-white">
       <div className="mx-auto max-w-7xl px-4 sm:px-6">
         {/* Main footer grid */}
-        <div className="py-14 grid gap-10 sm:grid-cols-2 lg:grid-cols-6">
+        <div className="grid items-start gap-10 py-14 sm:grid-cols-2 lg:grid-cols-3">
           {/* Brand column */}
           <div className="sm:col-span-2">
             <a href="/" className="mb-4 flex items-center gap-2">
@@ -60,18 +29,6 @@ export default function Footer() {
             <p className="mb-5 max-w-xs text-sm text-slate-500 leading-relaxed">
               AI-powered clinical triage and decision support for modern hospitals. Smarter care, faster decisions.
             </p>
-            <div className="flex gap-3">
-              {socials.map(({ icon: Icon, href, label }) => (
-                <a
-                  key={label}
-                  href={href}
-                  aria-label={label}
-                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-accent-300 hover:text-accent-600 hover:bg-accent-50 transition-all"
-                >
-                  <Icon className="h-4 w-4" />
-                </a>
-              ))}
-            </div>
           </div>
 
           {/* Links */}
@@ -101,17 +58,7 @@ export default function Footer() {
           <p className="text-sm text-slate-400">
             © {new Date().getFullYear()} Jeeva Health Technologies Pvt. Ltd. All rights reserved.
           </p>
-          <div className="flex gap-5">
-            <a href="#" className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
-              Privacy
-            </a>
-            <a href="#" className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
-              Terms
-            </a>
-            <a href="#" className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
-              Sitemap
-            </a>
-          </div>
+          <p className="text-xs text-slate-400">Built for modern clinical workflows.</p>
         </div>
       </div>
     </footer>
