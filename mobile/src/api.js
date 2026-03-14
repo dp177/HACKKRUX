@@ -7,6 +7,7 @@ const DEFAULT_API_BASE_URL = Platform.select({
 });
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
+const ENABLE_LOCAL_TRIAGE_FALLBACK = String(process.env.EXPO_PUBLIC_ENABLE_LOCAL_TRIAGE_FALLBACK || '').toLowerCase() === 'true';
 
 async function request(path, options = {}) {
   const url = `${API_BASE_URL}${path}`;
@@ -580,6 +581,8 @@ export async function triageAnalyze(payload, token, file = null) {
     const detailsText = String(error?.details || '').toLowerCase();
     const messageText = String(error?.message || '').toLowerCase();
     const shouldTryLocalFallback =
+      ENABLE_LOCAL_TRIAGE_FALLBACK
+      &&
       String(API_BASE_URL).includes('onrender.com')
       && (messageText.includes('failed to analyze triage') || detailsText.includes('not found'));
 
@@ -595,6 +598,12 @@ export async function triageAnalyze(payload, token, file = null) {
           // try next local candidate
         }
       }
+    } else {
+      console.log('[MobileAPI] triage_analyze_local_fallback_skipped', {
+        traceId,
+        enabled: ENABLE_LOCAL_TRIAGE_FALLBACK,
+        apiBaseUrl: API_BASE_URL
+      });
     }
 
     console.log('[MobileAPI] triage_analyze_failure', {

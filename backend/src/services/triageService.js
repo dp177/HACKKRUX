@@ -12,9 +12,23 @@ function normalizeAiBaseUrl(raw) {
   return cleaned.replace(/\/api(?:\/v1)?$/i, '');
 }
 
+function isPlaceholderAiUrl(raw) {
+  const value = String(raw || '').toLowerCase();
+  return value.includes('your-triage-engine') || value.includes('example.com') || value.includes('change-me');
+}
+
+function resolveConfiguredAiUrl() {
+  const configured = process.env.TRIAGE_AI_URL  || 'https://jeet2207-triage.hf.space';
+  if (!configured) return '';
+  if (isPlaceholderAiUrl(configured)) {
+    console.warn('[TriageService] ignoring_placeholder_ai_url', { configured });
+    return '';
+  }
+  return configured;
+}
+
 const TRIAGE_AI_URL = normalizeAiBaseUrl(
-  process.env.TRIAGE_AI_URL
-  || process.env.TRIAGE_ENGINE_URL
+  resolveConfiguredAiUrl()
   || 'https://jeet2207-triage.hf.space'
 );
 
@@ -29,6 +43,8 @@ function getAiBaseCandidates() {
 }
 
 const AI_BASE_CANDIDATES = getAiBaseCandidates();
+
+console.log('[TriageService] ai_base_candidates', { candidates: AI_BASE_CANDIDATES });
 
 const REQUEST_TIMEOUT_MS = Number(process.env.TRIAGE_AI_TIMEOUT_MS || 20000);
 
