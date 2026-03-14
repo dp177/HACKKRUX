@@ -527,7 +527,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
     const payload = {
       patient_id: patientId,
       conversation_history: conversationHistory,
-      chosen_department: chosenDepartmentName || null,
+      choosen_department: chosenDepartmentName || null,
       context: context || {},
       vitals: aiVitals
     };
@@ -536,7 +536,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       traceId,
       keys: Object.keys(payload),
       patientId: payload.patient_id,
-      chosenDepartment: payload.chosen_department,
+      choosenDepartment: payload.choosen_department,
       conversationLength: Array.isArray(payload.conversation_history) ? payload.conversation_history.length : 0,
       contextKeys: Object.keys(payload.context || {}),
       vitalsKeys: Object.keys(payload.vitals || {})

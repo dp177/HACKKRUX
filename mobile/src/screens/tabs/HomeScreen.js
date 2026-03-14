@@ -809,6 +809,7 @@ export default function HomeScreen() {
             token={token}
             availableDepartments={hospitalDepartments.map((d) => d.name).filter(Boolean)}
             departmentId={selectedDepartment?.id || null}
+            selectedDepartmentName={selectedDepartment?.name || null}
             hospitalId={selectedHospital?.id || null}
             inputMode={triageInputMode}
             mode={flowMode}

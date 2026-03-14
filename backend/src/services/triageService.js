@@ -189,7 +189,9 @@ async function analyzeTriage(payload, file) {
     inputMode: payload?.input_mode || null,
     contextKeys: Object.keys(payload?.context || {}),
     vitalsKeys: Object.keys(payload?.vitals || {}),
-    availableDepartmentsCount: Array.isArray(payload?.available_departments) ? payload.available_departments.length : 0
+    availableDepartmentsCount: Array.isArray(payload?.available_departments) ? payload.available_departments.length : 0,
+    choosenDepartment: payload?.choosen_department || null,
+    chosenDepartment: payload?.chosen_department || null
   });
 
   try {
@@ -202,22 +204,9 @@ async function analyzeTriage(payload, file) {
     });
     return data;
   } catch (error) {
-    const shouldTryJsonFallback = [400, 415, 422].includes(Number(error?.status || 0));
-    if (shouldTryJsonFallback) {
-      console.warn('[TriageService] analyze_multipart_failed_try_json_fallback', {
-        status: error?.status || null,
-        message: error?.message || 'unknown error'
-      });
-      const data = await postAiJson(['/api/v1/analyze-triage'], payload || {});
-      console.log('[TriageService] analyze_json_fallback_success', {
-        riskScore: data?.risk_score ?? null,
-        urgency: data?.urgency_level ?? null,
-        department: data?.department ?? null
-      });
-      return data;
-    }
-
     console.error('[TriageService] analyze error', {
+      note: 'JSON fallback disabled because analyze-triage requires multipart payload field',
+      status: error?.status || null,
       message: error?.message || 'unknown error',
       responseData: error?.response?.data || null
     });

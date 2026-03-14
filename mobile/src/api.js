@@ -550,8 +550,10 @@ export async function triageTranscribeAudio({ fileUri, token, languageCode = 'en
  * payload shape:
  * {
  *   patient_id: string,
+ *   choosen_department: string,
+ *   department_id?: string,
+ *   hospital_id?: string,
  *   conversation_history: [{role, content}],
- *   available_departments: string[],
  *   context: { is_conscious, breathing_difficulty, age, comorbidities, recent_trauma_or_surgery },
  *   vitals?: { heart_rate, blood_pressure, temperature, o2_sat, respiratory_rate }
  * }
@@ -570,11 +572,9 @@ export async function triageAnalyze(payload, token, file = null) {
       || base.choosenDepartment
       || base.department_name
       || base.departmentName
-      || base.department_id
-      || base.departmentId
       || null;
 
-    // The backend/AI contract should receive choosen_department (legacy key) and not available_departments.
+    // The FastAPI contract should receive choosen_department as a department name.
     delete base.available_departments;
     delete base.availableDepartments;
     delete base.chosen_department;
@@ -595,6 +595,8 @@ export async function triageAnalyze(payload, token, file = null) {
     hasToken: Boolean(token),
     patientId: analyzePayload?.patient_id || null,
     choosenDepartment: analyzePayload?.choosen_department || null,
+      departmentId: analyzePayload?.department_id || null,
+      hospitalId: analyzePayload?.hospital_id || null,
     historyLength: Array.isArray(analyzePayload?.conversation_history) ? analyzePayload.conversation_history.length : 0,
     outgoingPayload: analyzePayload
   });

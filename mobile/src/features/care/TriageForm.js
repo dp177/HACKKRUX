@@ -31,9 +31,9 @@ function countAssistantQuestions(messages = []) {
  *   4) submit analyze payload
  *
  * Props:
- *   patientId, token, availableDepartments[], departmentId, hospitalId, inputMode, mode, onComplete(result), onError(msg)
+ *   patientId, token, availableDepartments[], departmentId, selectedDepartmentName, hospitalId, inputMode, mode, onComplete(result), onError(msg)
  */
-export default function TriageForm({ patientId, token, availableDepartments, departmentId, hospitalId, inputMode = 'text', mode, onComplete, onError }) {
+export default function TriageForm({ patientId, token, availableDepartments, departmentId, selectedDepartmentName, hospitalId, inputMode = 'text', mode, onComplete, onError }) {
   const [step, setStep] = useState('initial');
   const [debugSessionId] = useState(() => `triage_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
 
@@ -262,6 +262,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
     const submitAction = mode === 'queue' ? 'Submit & Join Queue' : 'Submit & Continue Booking';
     const payload = {
       patient_id: patientId,
+      choosen_department: selectedDepartmentName || null,
       department_id: departmentId || null,
       hospital_id: hospitalId || null,
       input_mode: effectiveInputMode,
@@ -288,6 +289,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
         submitAction,
         mode,
         patientId,
+        selectedDepartmentName: payload.choosen_department,
         departmentId: payload.department_id,
         hospitalId: payload.hospital_id,
         inputMode: effectiveInputMode,
