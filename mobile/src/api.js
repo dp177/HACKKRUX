@@ -544,8 +544,8 @@ export async function triageTranscribeAudio({ fileUri, token, languageCode = 'en
 }
 
 /**
- * Calls the HuggingFace multi-agent triage AI directly.
- * POST /api/v1/analyze-triage  (multipart/form-data)
+ * Calls backend triage analyze endpoint.
+ * Backend then forwards to AI analyze endpoint using multipart/form-data.
  *
  * payload shape:
  * {
@@ -570,70 +570,38 @@ export async function triageAnalyze(payload, token, file = null) {
     historyLength: Array.isArray(payload?.conversation_history) ? payload.conversation_history.length : 0
   });
 
-  if (file) {
+  function buildAnalyzeFormData() {
     const formData = new FormData();
-    Object.entries(payload || {}).forEach(([key, value]) => {
-      if (value === undefined || value === null) return;
-      if (typeof value === 'object') {
-        formData.append(key, JSON.stringify(value));
-      } else {
-        formData.append(key, String(value));
-      }
+    formData.append('payload', JSON.stringify(payload || {}));
+
+    if (file) {
+      formData.append('file', {
+        uri: file.uri,
+        name: file.name || 'medical_record',
+        type: file.type || 'application/octet-stream'
+      });
+    }
+
+    return formData;
+  }
+
+  async function postAnalyzeMultipartToBase(baseUrl) {
+    const url = `${baseUrl}/v1/triage/analyze`;
+    console.log('[MobileAPI] triage_analyze_request', {
+      traceId,
+      url,
+      transport: 'multipart/form-data',
+      hasFile: Boolean(file)
     });
 
-    formData.append('file', {
-      uri: file.uri,
-      name: file.name || 'medical_record',
-      type: file.type || 'application/octet-stream'
-    });
-
-    const analyzeUrl = `${API_BASE_URL}/v1/triage/analyze`;
-    console.log('[MobileAPI] triage_analyze_file_request', { traceId, url: analyzeUrl });
-
-    const response = await fetch(analyzeUrl, {
+    const formData = buildAnalyzeFormData();
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'x-trace-id': traceId
       },
       body: formData
-    });
-
-    let data = null;
-    try { data = await response.json(); } catch { data = null; }
-    if (!response.ok) {
-      console.log('[MobileAPI] triage_analyze_error', {
-        traceId,
-        url: analyzeUrl,
-        status: response.status,
-        message: data?.error || `Request failed: ${response.status}`,
-        serverTraceId: data?.traceId || null,
-        details: data?.details || null
-      });
-      throw new Error(data?.error || `Request failed: ${response.status}`);
-    }
-    console.log('[MobileAPI] triage_analyze_success', {
-      traceId,
-      serverTraceId: data?.traceId || null,
-      riskScore: data?.triage?.risk_score ?? null,
-      urgency: data?.triage?.urgency_level ?? null,
-      queuePosition: data?.queue?.queuePosition ?? null
-    });
-    return data;
-  }
-
-  async function postAnalyzeToBase(baseUrl) {
-    const url = `${baseUrl}/v1/triage/analyze`;
-    console.log('[MobileAPI] triage_analyze_request', { traceId, url });
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'x-trace-id': traceId,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
     });
 
     let data = null;
@@ -651,7 +619,7 @@ export async function triageAnalyze(payload, token, file = null) {
   }
 
   try {
-    const data = await postAnalyzeToBase(API_BASE_URL);
+    const data = await postAnalyzeMultipartToBase(API_BASE_URL);
 
     console.log('[MobileAPI] triage_analyze_success', {
       traceId,
@@ -676,7 +644,7 @@ export async function triageAnalyze(payload, token, file = null) {
       for (const base of localBases) {
         try {
           console.log('[MobileAPI] triage_analyze_local_fallback_try', { traceId, base });
-          const data = await postAnalyzeToBase(base);
+          const data = await postAnalyzeMultipartToBase(base);
           console.log('[MobileAPI] triage_analyze_local_fallback_success', { traceId, base, serverTraceId: data?.traceId || null });
           return data;
         } catch {
