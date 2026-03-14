@@ -423,6 +423,12 @@ export function getCurrentUser(token) {
   });
 }
 
+export function getCurrentPatient(token) {
+  return request('/auth/me/patient', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export function logoutAuth(token) {
   return request('/auth/logout', {
     method: 'POST',

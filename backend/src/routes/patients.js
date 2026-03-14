@@ -15,17 +15,29 @@ const { authenticatePatient } = require('../middleware/auth');
 router.get('/:patientId/dashboard', authenticatePatient, async (req, res) => {
   try {
     const { patientId } = req.params;
-    
-    // Get patient with all related data
-    const patient = await Patient.findById(patientId)
-      .populate('visits')
-      .populate('vitalSigns')
-      .populate('appointments')
-      .populate('triageRecords');
+
+    if (String(req.patient.id) !== String(patientId)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Load patient plus related records by patientId.
+    const patient = await Patient.findById(patientId);
     
     if (!patient) {
       return res.status(404).json({ error: 'Patient not found' });
     }
+
+    const [visits, vitalSigns, appointments, triageRecords] = await Promise.all([
+      Visit.find({ patientId })
+        .populate('doctorId', 'firstName lastName')
+        .populate('departmentId', 'name')
+        .sort({ visitDate: -1 }),
+      VitalSignRecord.find({ patientId }).sort({ createdAt: -1 }),
+      Appointment.find({ patientId })
+        .populate('doctorId', 'firstName lastName specialty')
+        .sort({ scheduledDate: -1, scheduledTime: -1 }),
+      TriageRecord.find({ patientId }).sort({ createdAt: -1 })
+    ]);
     
     // Calculate age
     const age = Math.floor((new Date() - new Date(patient.dateOfBirth)) / 31557600000);
@@ -67,34 +79,34 @@ router.get('/:patientId/dashboard', authenticatePatient, async (req, res) => {
       },
       
       visitHistory: {
-        totalVisits: patient.totalVisits,
-        lastVisitDate: patient.lastVisitDate,
-        recentVisits: patient.visits.map(visit => ({
+        totalVisits: Number.isFinite(patient.totalVisits) ? patient.totalVisits : visits.length,
+        lastVisitDate: patient.lastVisitDate || visits[0]?.visitDate || null,
+        recentVisits: visits.map((visit) => ({
           id: visit.id,
           date: visit.visitDate,
-          doctor: visit.doctor ? `Dr. ${visit.doctor.firstName} ${visit.doctor.lastName}` : 'Unknown',
-          department: visit.department?.name || 'General',
+          doctor: visit.doctorId ? `Dr. ${visit.doctorId.firstName || ''} ${visit.doctorId.lastName || ''}`.trim() : 'Unknown',
+          department: visit.departmentId?.name || 'General',
           chiefComplaint: visit.chiefComplaint,
           diagnosis: visit.diagnosis,
           treatment: visit.treatment,
-          prescriptions: visit.prescriptions,
+          prescriptions: visit.prescriptions || [],
           followUpNeeded: visit.followUpNeeded,
           followUpDate: visit.followUpDate
         }))
       },
       
       vitalTrends: {
-        latestVitals: patient.vitalSigns[0] ? {
-          date: patient.vitalSigns[0].createdAt,
-          bloodPressure: patient.vitalSigns[0].bloodPressureSystolic ? 
-            `${patient.vitalSigns[0].bloodPressureSystolic}/${patient.vitalSigns[0].bloodPressureDiastolic}` : null,
-          heartRate: patient.vitalSigns[0].heartRate,
-          temperature: patient.vitalSigns[0].temperature,
-          oxygenSaturation: patient.vitalSigns[0].oxygenSaturation,
-          weight: patient.vitalSigns[0].weightKg,
-          bmi: patient.vitalSigns[0].bmi
+        latestVitals: vitalSigns[0] ? {
+          date: vitalSigns[0].createdAt,
+          bloodPressure: vitalSigns[0].bloodPressureSystolic ? 
+            `${vitalSigns[0].bloodPressureSystolic}/${vitalSigns[0].bloodPressureDiastolic}` : null,
+          heartRate: vitalSigns[0].heartRate,
+          temperature: vitalSigns[0].temperature,
+          oxygenSaturation: vitalSigns[0].oxygenSaturation,
+          weight: vitalSigns[0].weightKg,
+          bmi: vitalSigns[0].bmi
         } : null,
-        history: patient.vitalSigns.map(vital => ({
+        history: vitalSigns.map((vital) => ({
           date: vital.createdAt,
           bp: vital.bloodPressureSystolic ? 
             `${vital.bloodPressureSystolic}/${vital.bloodPressureDiastolic}` : null,
@@ -105,17 +117,17 @@ router.get('/:patientId/dashboard', authenticatePatient, async (req, res) => {
         }))
       },
       
-      upcomingAppointments: patient.appointments.map(app => ({
+      upcomingAppointments: appointments.map((app) => ({
         id: app.id,
         date: app.scheduledDate,
         time: app.scheduledTime,
-        doctor: app.doctor ? `Dr. ${app.doctor.firstName} ${app.doctor.lastName}` : 'Unknown',
-        specialty: app.doctor?.specialty,
+        doctor: app.doctorId ? `Dr. ${app.doctorId.firstName || ''} ${app.doctorId.lastName || ''}`.trim() : 'Unknown',
+        specialty: app.doctorId?.specialty,
         type: app.appointmentType,
         status: app.status
       })),
       
-      recentTriageAssessments: patient.triageRecords.map(triage => ({
+      recentTriageAssessments: triageRecords.map((triage) => ({
         id: triage.id,
         date: triage.createdAt,
         chiefComplaint: triage.chiefComplaint,

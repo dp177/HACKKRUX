@@ -1,8 +1,50 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, DeviceEventEmitter, FlatList, StyleSheet, Text, View } from 'react-native';
-import { getCurrentUser, getMyPrescriptions, getPatientDashboard } from '../../api';
+import { getCurrentPatient, getCurrentUser, getMyPrescriptions, getPatientDashboard } from '../../api';
 import { useAuthStore } from '../../store/authStore';
 import { colors, radii, spacing } from '../../theme/tokens';
+
+function normalizePrescriptionMedicines(value) {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      if (!item) return null;
+
+      if (typeof item === 'string') {
+        return { name: item };
+      }
+
+      if (typeof item === 'object') {
+        const name = String(item.name || item.medicineName || '').trim();
+        if (!name) return null;
+
+        return {
+          name,
+          dosage: item.dosage || null,
+          frequency: item.frequency || null,
+          duration: item.duration || null,
+          instructions: item.instructions || null
+        };
+      }
+
+      return null;
+    })
+    .filter(Boolean);
+}
+
+function derivePrescriptionsFromVisits(visits = []) {
+  return visits
+    .filter((visit) => Array.isArray(visit?.prescriptions) && visit.prescriptions.length)
+    .map((visit, index) => ({
+      id: `visit-rx-${visit?.id || index}`,
+      date: visit?.date || null,
+      diagnosis: visit?.diagnosis || visit?.chiefComplaint || null,
+      doctorName: visit?.doctor || null,
+      medicines: normalizePrescriptionMedicines(visit.prescriptions),
+      remarks: null
+    }));
+}
 
 export default function HistoryScreen() {
     function emitScroll(event) {
@@ -18,13 +60,37 @@ export default function HistoryScreen() {
     (async () => {
       if (!token) return;
       try {
-        const me = await getCurrentUser(token);
-        const [dashboard, prescriptionHistory] = await Promise.all([
-          getPatientDashboard(me.user.id, token),
-          getMyPrescriptions(token)
-        ]);
-        setVisits(dashboard?.visitHistory?.recentVisits || []);
-        setPrescriptions(Array.isArray(prescriptionHistory) ? prescriptionHistory : []);
+        let patientId = null;
+
+        try {
+          const patientProfile = await getCurrentPatient(token);
+          patientId = patientProfile?.id || null;
+        } catch {
+          // Fallback for legacy auth flow where /auth/me/patient may not be available.
+          const me = await getCurrentUser(token);
+          patientId = me?.patient?.id || me?.user?.patientId || me?.user?.id || me?.user?._id || null;
+        }
+
+        if (!patientId) {
+          throw new Error('Unable to resolve patient ID for dashboard');
+        }
+
+        const dashboard = await getPatientDashboard(patientId, token);
+        const nextVisits = dashboard?.visitHistory?.recentVisits || [];
+        setVisits(nextVisits);
+
+        try {
+          const prescriptionHistory = await getMyPrescriptions(token);
+          const normalized = Array.isArray(prescriptionHistory) ? prescriptionHistory : [];
+          if (normalized.length) {
+            setPrescriptions(normalized);
+          } else {
+            setPrescriptions(derivePrescriptionsFromVisits(nextVisits));
+          }
+        } catch {
+          // Fallback for older backends without /prescriptions/me.
+          setPrescriptions(derivePrescriptionsFromVisits(nextVisits));
+        }
       } catch {
         setVisits([]);
         setPrescriptions([]);
@@ -56,7 +122,7 @@ export default function HistoryScreen() {
                   <View key={item.id} style={styles.itemCard}>
                     <Text style={styles.itemTitle}>{item.diagnosis || 'General consultation'}</Text>
                     <Text style={styles.itemSub}>{new Date(item.date).toLocaleDateString()} {item.doctorName ? `• ${item.doctorName}` : ''}</Text>
-                    <Text style={styles.itemSub}>Medicines: {(item.medicines || []).map((m) => m.name).join(', ') || 'Not recorded'}</Text>
+                    <Text style={styles.itemSub}>Medicines: {(item.medicines || []).map((m) => m?.name || '').filter(Boolean).join(', ') || 'Not recorded'}</Text>
                     {item.remarks ? <Text style={styles.itemSub}>Remarks: {item.remarks}</Text> : null}
                   </View>
                 ))
