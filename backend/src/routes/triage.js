@@ -201,6 +201,17 @@ function resolveSpeechEncoding(file = {}) {
   return null;
 }
 
+function resolveSpeechSampleRate(file = {}, encoding = null) {
+  const mime = String(file?.mimetype || '').toLowerCase();
+  const name = String(file?.originalname || '').toLowerCase();
+
+  if (encoding === 'AMR') return 8000;
+  if (encoding === 'AMR_WB') return 16000;
+  if (encoding === 'OGG_OPUS' || encoding === 'WEBM_OPUS') return 48000;
+  if (encoding === 'LINEAR16' && (mime.includes('wav') || name.endsWith('.wav'))) return 16000;
+  return null;
+}
+
 function riskToPriority(urgencyLevel, riskScore) {
   const urgency = String(urgencyLevel || '').toUpperCase();
   if (urgency === 'CRITICAL') return 'CRITICAL';
@@ -339,6 +350,7 @@ router.post('/transcribe', authenticateAny, upload.single('file'), async (req, r
 
     const languageCode = normalizeOptionalString(req.body?.language_code) || 'en-US';
     const encoding = resolveSpeechEncoding(req.file);
+    const sampleRateHertz = resolveSpeechSampleRate(req.file, encoding);
 
     console.log('[TriageTranscribe] start', {
       traceId,
@@ -348,6 +360,7 @@ router.post('/transcribe', authenticateAny, upload.single('file'), async (req, r
       hasInlineGoogleCredentials: Boolean(normalizeOptionalString(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON)),
       languageCode,
       encoding,
+      sampleRateHertz,
       fileName: req.file.originalname || null,
       mimeType: req.file.mimetype || null,
       bytes: req.file.buffer.length
@@ -361,6 +374,7 @@ router.post('/transcribe', authenticateAny, upload.single('file'), async (req, r
         languageCode,
         model: 'latest_short',
         enableAutomaticPunctuation: true,
+        ...(sampleRateHertz ? { sampleRateHertz } : {}),
         ...(encoding ? { encoding } : {})
       }
     };
