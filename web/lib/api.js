@@ -1,7 +1,15 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:5000/api';
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const url = `${API_BASE_URL}${path}`;
+  console.log('[WebAPI] request_start', {
+    method: options.method || 'GET',
+    path,
+    url,
+    hasAuth: Boolean(options?.headers?.Authorization)
+  });
+
+  const response = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -18,8 +26,22 @@ async function request(path, options = {}) {
   }
 
   if (!response.ok) {
+    console.log('[WebAPI] request_error', {
+      method: options.method || 'GET',
+      path,
+      url,
+      status: response.status,
+      message: data?.error || `Request failed: ${response.status}`
+    });
     throw new Error(data?.error || `Request failed: ${response.status}`);
   }
+
+  console.log('[WebAPI] request_success', {
+    method: options.method || 'GET',
+    path,
+    url,
+    status: response.status
+  });
 
   return data;
 }

@@ -9,13 +9,15 @@ const DEFAULT_API_BASE_URL = Platform.select({
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
 
 async function request(path, options = {}) {
+  const url = `${API_BASE_URL}${path}`;
   console.log('[MobileAPI] request_start', {
     method: options.method || 'GET',
     path,
+    url,
     hasAuth: Boolean(options?.headers?.Authorization)
   });
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -34,6 +36,7 @@ async function request(path, options = {}) {
     console.log('[MobileAPI] request_error', {
       method: options.method || 'GET',
       path,
+      url,
       status: response.status,
       message: data?.error || `Request failed: ${response.status}`,
       traceId: data?.traceId || null,
@@ -45,6 +48,7 @@ async function request(path, options = {}) {
   console.log('[MobileAPI] request_success', {
     method: options.method || 'GET',
     path,
+    url,
     status: response.status
   });
 
@@ -423,7 +427,13 @@ const TRIAGE_AI_BASE = (process.env.EXPO_PUBLIC_TRIAGE_AI_URL || 'https://jeet22
  * @returns {Promise<{ questions: string[] }>}
  */
 export async function triageChatNext(conversationHistory) {
-  const response = await fetch(`${TRIAGE_AI_BASE}/api/v1/chat/next-questions`, {
+  const url = `${TRIAGE_AI_BASE}/api/v1/chat/next-questions`;
+  console.log('[MobileAPI] triage_chat_next_start', {
+    url,
+    historyLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0
+  });
+
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ conversation_history: conversationHistory })
@@ -433,8 +443,17 @@ export async function triageChatNext(conversationHistory) {
   try { data = await response.json(); } catch { data = null; }
 
   if (!response.ok) {
+    console.log('[MobileAPI] triage_chat_next_error', {
+      url,
+      status: response.status,
+      message: data?.detail?.[0]?.msg || data?.error || `chat/next-questions failed: ${response.status}`
+    });
     throw new Error(data?.detail?.[0]?.msg || data?.error || `chat/next-questions failed: ${response.status}`);
   }
+  console.log('[MobileAPI] triage_chat_next_success', {
+    url,
+    questions: Array.isArray(data?.questions) ? data.questions.length : 0
+  });
   return data; // { questions: string[] }
 }
 
@@ -482,7 +501,10 @@ export async function triageAnalyze(payload, token, file = null) {
       type: file.type || 'application/octet-stream'
     });
 
-    const response = await fetch(`${API_BASE_URL}/v1/triage/analyze`, {
+    const analyzeUrl = `${API_BASE_URL}/v1/triage/analyze`;
+    console.log('[MobileAPI] triage_analyze_file_request', { traceId, url: analyzeUrl });
+
+    const response = await fetch(analyzeUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -496,6 +518,7 @@ export async function triageAnalyze(payload, token, file = null) {
     if (!response.ok) {
       console.log('[MobileAPI] triage_analyze_error', {
         traceId,
+        url: analyzeUrl,
         status: response.status,
         message: data?.error || `Request failed: ${response.status}`,
         serverTraceId: data?.traceId || null,
@@ -513,15 +536,36 @@ export async function triageAnalyze(payload, token, file = null) {
     return data;
   }
 
-  try {
-    const data = await request('/v1/triage/analyze', {
+  async function postAnalyzeToBase(baseUrl) {
+    const url = `${baseUrl}/v1/triage/analyze`;
+    console.log('[MobileAPI] triage_analyze_request', { traceId, url });
+
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
-        'x-trace-id': traceId
+        'x-trace-id': traceId,
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
     });
+
+    let data = null;
+    try { data = await response.json(); } catch { data = null; }
+    if (!response.ok) {
+      const err = new Error(data?.error || `Request failed: ${response.status}`);
+      err.status = response.status;
+      err.details = data?.details || null;
+      err.traceId = data?.traceId || null;
+      err.url = url;
+      throw err;
+    }
+    console.log('[MobileAPI] triage_analyze_response_ok', { traceId, url, status: response.status });
+    return data;
+  }
+
+  try {
+    const data = await postAnalyzeToBase(API_BASE_URL);
 
     console.log('[MobileAPI] triage_analyze_success', {
       traceId,
@@ -533,9 +577,31 @@ export async function triageAnalyze(payload, token, file = null) {
 
     return data;
   } catch (error) {
+    const detailsText = String(error?.details || '').toLowerCase();
+    const messageText = String(error?.message || '').toLowerCase();
+    const shouldTryLocalFallback =
+      String(API_BASE_URL).includes('onrender.com')
+      && (messageText.includes('failed to analyze triage') || detailsText.includes('not found'));
+
+    if (shouldTryLocalFallback) {
+      const localBases = ['http://10.0.2.2:5000/api', 'http://localhost:5000/api'];
+      for (const base of localBases) {
+        try {
+          console.log('[MobileAPI] triage_analyze_local_fallback_try', { traceId, base });
+          const data = await postAnalyzeToBase(base);
+          console.log('[MobileAPI] triage_analyze_local_fallback_success', { traceId, base, serverTraceId: data?.traceId || null });
+          return data;
+        } catch {
+          // try next local candidate
+        }
+      }
+    }
+
     console.log('[MobileAPI] triage_analyze_failure', {
       traceId,
-      message: error?.message || 'unknown error'
+      message: error?.message || 'unknown error',
+      serverTraceId: error?.traceId || null,
+      details: error?.details || null
     });
     throw error;
   }

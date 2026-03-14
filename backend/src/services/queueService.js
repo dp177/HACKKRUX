@@ -99,6 +99,9 @@ async function emitDepartmentQueueSnapshot(departmentId) {
 async function recalculateDepartmentQueue(departmentId) {
   if (!departmentId) return [];
 
+  const startedAt = Date.now();
+  console.log('[queueService] recalculate_start', { departmentId: String(departmentId) });
+
   const avgConsultationMinutes = await getAvgConsultationMinutesForDepartment(departmentId);
 
   const waiting = await Queue.find({ departmentId, status: 'WAITING' }).sort({ priorityScore: -1, joinedAt: 1, createdAt: 1 });
@@ -118,10 +121,26 @@ async function recalculateDepartmentQueue(departmentId) {
   }
 
   await emitDepartmentQueueSnapshot(departmentId);
+  console.log('[queueService] recalculate_done', {
+    departmentId: String(departmentId),
+    waitingCount: waiting.length,
+    avgConsultationMinutes,
+    durationMs: Date.now() - startedAt
+  });
   return waiting;
 }
 
 async function enqueuePatientToDepartmentQueue({ patientId, triageRecordId, departmentId, hospitalId, riskScore, urgencyLevel }) {
+  const startedAt = Date.now();
+  console.log('[queueService] enqueue_start', {
+    patientId: patientId ? String(patientId) : null,
+    triageRecordId: triageRecordId ? String(triageRecordId) : null,
+    departmentId: departmentId ? String(departmentId) : null,
+    hospitalId: hospitalId ? String(hospitalId) : null,
+    riskScore: Number(riskScore || 0),
+    urgencyLevel: normalizeUrgency(urgencyLevel)
+  });
+
   if (!patientId || !departmentId) {
     throw new Error('patientId and departmentId are required for queue entry');
   }
@@ -151,15 +170,42 @@ async function enqueuePatientToDepartmentQueue({ patientId, triageRecordId, depa
   );
 
   const waiting = await recalculateDepartmentQueue(departmentId);
-  return waiting.find((item) => String(item.patientId) === String(patientId)) || null;
+  const queued = waiting.find((item) => String(item.patientId) === String(patientId)) || null;
+
+  console.log('[queueService] enqueue_done', {
+    patientId: String(patientId),
+    departmentId: String(departmentId),
+    queueEntryId: queued ? String(queued._id) : null,
+    queuePosition: queued?.queuePosition || null,
+    status: queued?.status || null,
+    durationMs: Date.now() - startedAt
+  });
+
+  return queued;
 }
 
 async function getPatientQueueStatus(patientId) {
+  console.log('[queueService] patient_status_start', {
+    patientId: patientId ? String(patientId) : null
+  });
+
   const entry = await Queue.findOne({ patientId, status: 'WAITING' }).sort({ updatedAt: -1 });
-  if (!entry) return null;
+  if (!entry) {
+    console.log('[queueService] patient_status_empty', {
+      patientId: patientId ? String(patientId) : null
+    });
+    return null;
+  }
 
   const avgConsultationMinutes = await getAvgConsultationMinutesForDepartment(entry.departmentId);
-  return queuePayload(entry, avgConsultationMinutes);
+  const payload = queuePayload(entry, avgConsultationMinutes);
+  console.log('[queueService] patient_status_done', {
+    patientId: String(patientId),
+    departmentId: entry.departmentId ? String(entry.departmentId) : null,
+    queuePosition: payload.position,
+    estimatedWaitMinutes: payload.estimatedWaitMinutes
+  });
+  return payload;
 }
 
 async function getDepartmentQueueForDoctorDepartment(departmentId) {
@@ -173,8 +219,17 @@ async function getDepartmentQueueForDoctorDepartment(departmentId) {
 async function callNextFromDepartmentQueue(departmentId) {
   if (!departmentId) return null;
 
+  const startedAt = Date.now();
+  console.log('[queueService] call_next_start', { departmentId: String(departmentId) });
+
   const nextEntry = await Queue.findOne({ departmentId, status: 'WAITING' }).sort({ queuePosition: 1 });
-  if (!nextEntry) return null;
+  if (!nextEntry) {
+    console.log('[queueService] call_next_empty', {
+      departmentId: String(departmentId),
+      durationMs: Date.now() - startedAt
+    });
+    return null;
+  }
 
   nextEntry.status = 'IN_CONSULTATION';
   nextEntry.calledAt = new Date();
@@ -182,12 +237,22 @@ async function callNextFromDepartmentQueue(departmentId) {
   await nextEntry.save();
 
   await recalculateDepartmentQueue(departmentId);
+  console.log('[queueService] call_next_done', {
+    departmentId: String(departmentId),
+    queueEntryId: String(nextEntry._id),
+    patientId: String(nextEntry.patientId),
+    durationMs: Date.now() - startedAt
+  });
   return nextEntry;
 }
 
 async function runRescoreForAllDepartments() {
+  const startedAt = Date.now();
+  console.log('[queueService] rescore_all_start');
+
   const waitingRows = await Queue.find({ status: 'WAITING' }).select('_id patientId departmentId riskScore urgencyLevel joinedAt');
   if (!waitingRows.length) {
+    console.log('[queueService] rescore_all_no_waiting_rows');
     return { scanned: 0, updated: 0, departments: 0 };
   }
 
@@ -203,6 +268,12 @@ async function runRescoreForAllDepartments() {
   for (const [deptKey, rows] of byDepartment.entries()) {
     if (deptKey === 'none') continue;
 
+    const groupStartedAt = Date.now();
+    console.log('[queueService] rescore_department_start', {
+      departmentId: deptKey,
+      queuedPatients: rows.length
+    });
+
     const patientsPayload = rows.map((row) => ({
       patient_id: String(row.patientId),
       risk_score: Number(row.riskScore || 0),
@@ -212,6 +283,12 @@ async function runRescoreForAllDepartments() {
 
     const ai = await rescoreBatch(patientsPayload);
     const results = Array.isArray(ai?.results) ? ai.results : [];
+
+    console.log('[queueService] rescore_department_ai_response', {
+      departmentId: deptKey,
+      requested: patientsPayload.length,
+      returned: results.length
+    });
 
     const byPatientId = new Map(results.map((r) => [String(r.patient_id || ''), r]));
 
@@ -235,7 +312,20 @@ async function runRescoreForAllDepartments() {
     }
 
     await recalculateDepartmentQueue(rows[0].departmentId);
+
+    console.log('[queueService] rescore_department_done', {
+      departmentId: deptKey,
+      updatedSoFar: updated,
+      durationMs: Date.now() - groupStartedAt
+    });
   }
+
+  console.log('[queueService] rescore_all_done', {
+    scanned: waitingRows.length,
+    updated,
+    departments: byDepartment.size,
+    durationMs: Date.now() - startedAt
+  });
 
   return { scanned: waitingRows.length, updated, departments: byDepartment.size };
 }
