@@ -19,6 +19,23 @@ function formatDate(date) {
   return parsed.toLocaleDateString('en-US', { day: '2-digit', month: 'short' });
 }
 
+function formatTime(time) {
+  const raw = String(time || '').trim();
+  if (!raw) return '-';
+
+  // Keep already-formatted times like "9:30 AM" as-is.
+  if (/am|pm/i.test(raw)) return raw.toUpperCase();
+
+  const [hourPart, minutePart = '00'] = raw.split(':');
+  const hour = Number(hourPart);
+  const minute = Number(minutePart);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return raw;
+
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  const normalizedHour = hour % 12 || 12;
+  return `${String(normalizedHour).padStart(2, '0')}:${String(minute).padStart(2, '0')} ${suffix}`;
+}
+
 export default function AppointmentsScreen({ mode = 'upcoming' }) {
   function emitScroll(event) {
     DeviceEventEmitter.emit('app:tab-scroll', { y: event?.nativeEvent?.contentOffset?.y || 0 });
@@ -35,12 +52,35 @@ export default function AppointmentsScreen({ mode = 'upcoming' }) {
 
     setLoading(true);
     try {
-      const response = isHistoryMode
-        ? await getAppointmentHistory(token)
-        : await getUpcomingAppointments(token);
+      if (isHistoryMode) {
+        const [upcomingResponse, historyResponse] = await Promise.all([
+          getUpcomingAppointments(token),
+          getAppointmentHistory(token)
+        ]);
 
-      const list = isHistoryMode ? (response?.history || []) : (response?.appointments || []);
-      setAppointments(list);
+        const combined = [
+          ...(upcomingResponse?.appointments || []),
+          ...(historyResponse?.history || [])
+        ];
+
+        // Dedupe by appointmentId and sort by date+time (latest first).
+        const dedupedMap = new Map();
+        combined.forEach((item) => {
+          if (!item?.appointmentId) return;
+          dedupedMap.set(String(item.appointmentId), item);
+        });
+
+        const merged = Array.from(dedupedMap.values()).sort((a, b) => {
+          const aKey = `${a?.date || ''}T${a?.time || '00:00'}`;
+          const bKey = `${b?.date || ''}T${b?.time || '00:00'}`;
+          return new Date(bKey) - new Date(aKey);
+        });
+
+        setAppointments(merged);
+      } else {
+        const response = await getUpcomingAppointments(token);
+        setAppointments(response?.appointments || []);
+      }
     } catch (error) {
       console.log('[AppointmentsScreen] load_error', { mode, message: error?.message || 'unknown' });
       setAppointments([]);
@@ -53,7 +93,7 @@ export default function AppointmentsScreen({ mode = 'upcoming' }) {
     load();
   }, [token, mode]);
 
-  const title = useMemo(() => (isHistoryMode ? 'Appointment History' : 'Upcoming Appointments'), [isHistoryMode]);
+  const title = useMemo(() => (isHistoryMode ? 'All Appointments' : 'Upcoming Appointments'), [isHistoryMode]);
 
   async function onCancel(appointmentId) {
     if (!appointmentId || !token) return;
@@ -82,11 +122,11 @@ export default function AppointmentsScreen({ mode = 'upcoming' }) {
             <View style={styles.card}>
               <Text style={styles.hospital}>{item.hospitalName || 'Hospital'}</Text>
               <Text style={styles.doctor}>{item.doctorName || 'Doctor'} {item.department ? `• ${item.department}` : ''}</Text>
-              <Text style={styles.meta}>{formatDate(item.date)} • {item.time}</Text>
+              <Text style={styles.meta}>{formatDate(item.date)} • {formatTime(item.time)}</Text>
               <Text style={styles.status}>Status: {item.status || '-'}</Text>
               {isHistoryMode ? (
                 <Text style={styles.status}>
-                  Previously booked slot: {item.date} {item.time}{item.slotId ? ` (ID: ${item.slotId})` : ''}
+                  Previously booked slot: {formatDate(item.date)} at {formatTime(item.time)}
                 </Text>
               ) : null}
 
