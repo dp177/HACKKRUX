@@ -97,6 +97,10 @@ const queueSchema = new mongoose.Schema({
   estimatedWaitMinutes: {
     type: Number,
     default: 0
+  },
+  waitTimeMinutes: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: true,

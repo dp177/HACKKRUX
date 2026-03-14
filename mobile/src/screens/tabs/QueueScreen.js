@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, DeviceEventEmitter, Dimensions, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, DeviceEventEmitter, Dimensions, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { io } from 'socket.io-client';
 import { getMyQueueStatus } from '../../api';
 import { useAuthStore } from '../../store/authStore';
@@ -35,6 +35,7 @@ export default function QueueScreen() {
           tokenNumber: status?.tokenNumber ?? status?.position ?? null,
           patientsAhead: status?.patientsAhead ?? null,
           estimatedWaitMinutes: status?.estimatedWaitMinutes ?? activeQueue?.estimatedWaitMinutes ?? null,
+          waitTimeMinutes: status?.waitTimeMinutes ?? activeQueue?.waitTimeMinutes ?? null,
           priorityLevel: status?.priorityLevel || activeQueue?.priorityLevel,
           riskScore: status?.riskScore ?? activeQueue?.riskScore,
           departmentName: status?.departmentName || activeQueue?.departmentName || null,
@@ -66,6 +67,13 @@ export default function QueueScreen() {
           socket.on('queue:update', (payload) => {
             if (!alive || !payload) return;
             console.log('[QueueScreen] socket_queue_update', payload);
+
+            if (payload.notificationType === 'PATIENT_CALLED' || payload.status === 'IN_CONSULTATION') {
+              Alert.alert('Patient Called', payload.message || 'It is your turn. Please proceed to consultation room.');
+              setQueueData(null);
+              return;
+            }
+
             setQueueData((prev) => ({
               ...(prev || {}),
               ...payload
@@ -123,6 +131,9 @@ export default function QueueScreen() {
 
           <Text style={styles.label}>Estimated Wait</Text>
           <Text style={styles.value}>{queueData.estimatedWaitMinutes != null ? `${queueData.estimatedWaitMinutes} min` : '-'}</Text>
+
+          <Text style={styles.label}>Waited Time</Text>
+          <Text style={styles.value}>{queueData.waitTimeMinutes != null ? `${queueData.waitTimeMinutes} min` : '-'}</Text>
         </View>
       ) : (
         <View style={styles.emptyCard}>

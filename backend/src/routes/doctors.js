@@ -165,6 +165,8 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
             urgency_level: row.urgencyLevel,
             total_risk_score: row.riskScore,
             wait_minutes: row.estimatedWaitMinutes,
+            estimated_wait_minutes: row.estimatedWaitMinutes,
+            waited_minutes: row.waitTimeMinutes,
             queue_position: row.queuePosition
           })),
           statistics: {

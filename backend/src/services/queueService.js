@@ -52,6 +52,12 @@ function queuePayload(entry, avgConsultationMinutes) {
   const estimatedWaitMinutes = Number.isFinite(Number(entry.estimatedWaitMinutes))
     ? Number(entry.estimatedWaitMinutes)
     : patientsAhead * avgConsultationMinutes;
+  const waitedFromJoinedAt = entry?.joinedAt
+    ? Math.max(0, Math.floor((Date.now() - new Date(entry.joinedAt).getTime()) / 60000))
+    : 0;
+  const waitTimeMinutes = Number.isFinite(Number(entry.waitTimeMinutes))
+    ? Math.max(Number(entry.waitTimeMinutes), waitedFromJoinedAt)
+    : waitedFromJoinedAt;
 
   return {
     patientId: String(entry.patientId),
@@ -60,6 +66,7 @@ function queuePayload(entry, avgConsultationMinutes) {
     position,
     patientsAhead,
     estimatedWaitMinutes,
+    waitTimeMinutes,
     priorityLevel: entry.priorityLevel,
     riskScore: Number(entry.riskScore || 0),
     status: entry.status,
@@ -157,17 +164,22 @@ async function recalculateDepartmentQueue(departmentId) {
     const nextPosition = i + 1;
     const nextPatientsAhead = i;
     const nextEstimated = i * avgConsultationMinutes;
+    const nextWaited = entry?.joinedAt
+      ? Math.max(0, Math.floor((Date.now() - new Date(entry.joinedAt).getTime()) / 60000))
+      : 0;
 
     if (
       entry.queuePosition !== nextPosition
       || entry.patientsAhead !== nextPatientsAhead
       || entry.estimatedWaitMinutes !== nextEstimated
+      || entry.waitTimeMinutes !== nextWaited
       || (departmentName && entry.departmentName !== departmentName)
       || (hospitalName && entry.hospitalName !== hospitalName)
     ) {
       entry.queuePosition = nextPosition;
       entry.patientsAhead = nextPatientsAhead;
       entry.estimatedWaitMinutes = nextEstimated;
+      entry.waitTimeMinutes = nextWaited;
       if (departmentName) entry.departmentName = departmentName;
       if (hospitalName) entry.hospitalName = hospitalName;
       await entry.save();
@@ -225,6 +237,7 @@ async function enqueuePatientToDepartmentQueue({ patientId, triageRecordId, depa
       patientsAhead: 0,
       queuePosition: 1,
       estimatedWaitMinutes: 0,
+      waitTimeMinutes: 0,
       calledAt: null,
       startedAt: null,
       completedAt: null
@@ -299,6 +312,18 @@ async function callNextFromDepartmentQueue(departmentId) {
   nextEntry.startedAt = new Date();
   await nextEntry.save();
 
+  const io = getSocketServer();
+  if (io) {
+    io.to(`patient:${String(nextEntry.patientId)}`).emit('queue:update', {
+      patientId: String(nextEntry.patientId),
+      queueEntryId: String(nextEntry._id),
+      status: nextEntry.status,
+      calledAt: nextEntry.calledAt,
+      notificationType: 'PATIENT_CALLED',
+      message: 'It is your turn. Please proceed to consultation room.'
+    });
+  }
+
   await recalculateDepartmentQueue(departmentId);
   console.log('[queueService] call_next_done', {
     departmentId: String(departmentId),
@@ -337,11 +362,25 @@ async function runRescoreForAllDepartments() {
       queuedPatients: rows.length
     });
 
-    const patientsPayload = rows.map((row) => ({
+    const now = Date.now();
+    const rowsWithWait = rows.map((row) => {
+      const waitTimeMinutes = Math.max(0, Math.floor((now - new Date(row.joinedAt).getTime()) / 60000));
+      return {
+        row,
+        waitTimeMinutes
+      };
+    });
+
+    // Persist timestamp-based wait-time values on each rescore pass.
+    await Promise.all(rowsWithWait.map(({ row, waitTimeMinutes }) => (
+      Queue.findByIdAndUpdate(row._id, { waitTimeMinutes })
+    )));
+
+    const patientsPayload = rowsWithWait.map(({ row, waitTimeMinutes }) => ({
       patient_id: String(row.patientId),
       risk_score: Number(row.riskScore || 0),
       urgency_level: normalizeUrgency(row.urgencyLevel),
-      wait_time_minutes: Math.max(0, Math.floor((Date.now() - new Date(row.joinedAt).getTime()) / 60000))
+      wait_time_minutes: waitTimeMinutes
     }));
 
     const ai = await rescoreBatch(patientsPayload);
@@ -355,7 +394,7 @@ async function runRescoreForAllDepartments() {
 
     const byPatientId = new Map(results.map((r) => [String(r.patient_id || ''), r]));
 
-    for (const row of rows) {
+    for (const { row, waitTimeMinutes } of rowsWithWait) {
       const next = byPatientId.get(String(row.patientId));
       if (!next) continue;
 
@@ -369,7 +408,8 @@ async function runRescoreForAllDepartments() {
         riskScore: nextScore,
         urgencyLevel: nextUrgency,
         priorityLevel: nextUrgency,
-        priorityScore: nextPriority
+        priorityScore: nextPriority,
+        waitTimeMinutes
       });
       updated += 1;
     }

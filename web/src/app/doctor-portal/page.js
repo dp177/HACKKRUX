@@ -70,7 +70,8 @@ function queueRowFromRaw(item, index) {
     symptoms: item.chief_complaint || item.symptoms || 'Symptoms pending',
     urgency: priority,
     score,
-    waitTime: item.wait_time || `${item.wait_minutes || 0} min`
+    waitTime: item.wait_time || `${item.estimated_wait_minutes ?? item.wait_minutes ?? 0} min`,
+    waitedTime: `${item.waited_minutes ?? 0} min`
   };
 }
 
@@ -407,7 +408,10 @@ export default function DoctorPortalPage() {
         <article className="card">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-xl font-semibold text-slate-900">Patient Queue</h2>
-            <button type="button" className="secondary" onClick={() => loadPortalData(false)}>Refresh Queue</button>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={handleCallNextPatient}>Call Top Patient</button>
+              <button type="button" className="secondary" onClick={() => loadPortalData(false)}>Refresh Queue</button>
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -418,6 +422,7 @@ export default function DoctorPortalPage() {
                   <th className="px-2 py-1">Symptoms</th>
                   <th className="px-2 py-1">Urgency</th>
                   <th className="px-2 py-1">Score</th>
+                  <th className="px-2 py-1">Waited</th>
                   <th className="px-2 py-1">Wait</th>
                 </tr>
               </thead>
@@ -432,6 +437,7 @@ export default function DoctorPortalPage() {
                     <td className="px-2 py-2 text-slate-600">{item.symptoms}</td>
                     <td className="px-2 py-2">{priorityBadge(item.urgency)}</td>
                     <td className="px-2 py-2 text-slate-700">{item.score}</td>
+                    <td className="px-2 py-2 text-slate-700">{item.waitedTime}</td>
                     <td className="px-2 py-2 text-slate-600">{item.waitTime}</td>
                   </tr>
                 ))}
