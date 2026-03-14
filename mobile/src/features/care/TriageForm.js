@@ -255,7 +255,6 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
   if (effectiveInputMode === 'voice' && (step === 'initial' || step === 'voice' || step === 'chat') && step !== 'context') {
     return (
       <VoiceTriageAgent
-        token={token}
         onComplete={handleVoiceHistoryComplete}
         onError={(message) => onError?.(message)}
         onFallbackToText={() => fallbackToTextMode('Voice input unavailable. Switched to Text Input.')}

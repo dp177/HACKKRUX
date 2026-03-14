@@ -10,9 +10,9 @@
     "web": "expo start --web"
   },
   "dependencies": {
-    "@react-native-voice/voice": "^3.2.4",
     "@expo-google-fonts/inter": "^0.4.2",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-voice/voice": "^3.2.4",
     "expo": "^54.0.0",
     "expo-auth-session": "^7.0.10",
     "expo-av": "~16.0.7",
@@ -23,6 +23,7 @@
     "expo-linear-gradient": "~15.0.8",
     "expo-notifications": "^55.0.12",
     "expo-speech": "~14.0.7",
+    "expo-speech-recognition": "^3.1.1",
     "expo-status-bar": "~3.0.9",
     "expo-web-browser": "^15.0.10",
     "react": "19.1.0",
