@@ -131,6 +131,7 @@ export default function HomeScreen() {
   const [upcomingPreview, setUpcomingPreview] = useState(null);
   const [upcomingPreviewLoading, setUpcomingPreviewLoading] = useState(false);
   const [triageOutcome, setTriageOutcome] = useState(null);
+  const [triageInputMode, setTriageInputMode] = useState('text');
 
   const greetingName = user?.name?.split(' ')[0] || 'Patient';
 
@@ -361,7 +362,27 @@ export default function HomeScreen() {
       return;
     }
 
-    pushRoute('triage');
+    Alert.alert(
+      'Choose Input Mode',
+      'How would you like to answer triage questions?',
+      [
+        {
+          text: 'Voice Input',
+          onPress: () => {
+            setTriageInputMode('voice');
+            pushRoute('triage');
+          }
+        },
+        {
+          text: 'Text Input',
+          onPress: () => {
+            setTriageInputMode('text');
+            pushRoute('triage');
+          }
+        }
+      ],
+      { cancelable: true }
+    );
   }
 
   async function handleSelectDoctor(doctor) {
@@ -543,6 +564,7 @@ export default function HomeScreen() {
     setSlotFallbackMessage('');
     setSlotInfoMessage('');
     setTriageOutcome(null);
+    setTriageInputMode('text');
   }
 
   function goToActiveQueueTab() {
@@ -785,6 +807,7 @@ export default function HomeScreen() {
             availableDepartments={hospitalDepartments.map((d) => d.name).filter(Boolean)}
             departmentId={selectedDepartment?.id || null}
             hospitalId={selectedHospital?.id || null}
+            inputMode={triageInputMode}
             mode={flowMode}
             onComplete={handleTriageComplete}
             onError={(msg) => Alert.alert('Triage Error', msg)}

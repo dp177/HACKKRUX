@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -9,50 +9,86 @@ import {
   View
 } from 'react-native';
 import { triageChatNext, triageAnalyze } from '../../api';
+import VoiceTriageAgent from '../../components/VoiceTriageAgent';
 import { colors, radii, spacing } from '../../theme/tokens';
 
-const MAX_AI_QUESTIONS = 3;
+const TRIAGE_COMPLETE_TOKEN = '[TRIAGE_COMPLETE]';
 const BREATHING_OPTIONS = ['normal', 'mild', 'severe'];
 const COMORBIDITY_OPTIONS = ['Diabetes', 'Hypertension', 'Heart disease', 'Asthma', 'COPD', 'Kidney disease'];
 
 /**
- * Multi-step AI triage chat flow:
- *   1. 'initial'  — ask chief complaint + duration
- *   2. 'ai_loading' — fetch next questions from AI
- *   3. 'ai_chat'  — ask AI questions one by one
- *   4. 'context'  — collect age, breathing, comorbidities, vitals
- *   5. 'submitting' — analyze triage
+ * Multi-step AI triage flow:
+ *   1) text mode: initial prompt -> dynamic recursive AI Q&A
+ *   2) voice mode: voice agent -> dynamic recursive AI Q&A
+ *   3) stop condition: [TRIAGE_COMPLETE] -> context/vitals screen
+ *   4) submit analyze payload
  *
  * Props:
- *   patientId, token, availableDepartments[], departmentId, hospitalId, mode, onComplete(result), onError(msg)
+ *   patientId, token, availableDepartments[], departmentId, hospitalId, inputMode, mode, onComplete(result), onError(msg)
  */
-export default function TriageForm({ patientId, token, availableDepartments, departmentId, hospitalId, mode, onComplete, onError }) {
+export default function TriageForm({ patientId, token, availableDepartments, departmentId, hospitalId, inputMode = 'text', mode, onComplete, onError }) {
   const [step, setStep] = useState('initial');
 
-  // Step 1
+  // Text-mode bootstrap
   const [problem, setProblem] = useState('');
   const [duration, setDuration] = useState('');
   const [initError, setInitError] = useState('');
 
-  // Step 3 (AI chat)
+  // Shared dynamic history (text/voice)
   const [history, setHistory] = useState([]);
-  const [aiQuestions, setAiQuestions] = useState([]);
-  const [aiQIdx, setAiQIdx] = useState(0);
+  const [currentQuestion, setCurrentQuestion] = useState('');
   const [currentAnswer, setCurrentAnswer] = useState('');
   const [answerError, setAnswerError] = useState('');
+  const [askingNext, setAskingNext] = useState(false);
 
-  // Step 4 (context)
+  // Context / vitals screen
   const [age, setAge] = useState('');
   const [breathing, setBreathing] = useState('normal');
   const [recentTrauma, setRecentTrauma] = useState(false);
   const [comorbidities, setComorbidities] = useState([]);
   const [vitals, setVitals] = useState({ hr: '', bp: '', temp: '', o2: '', rr: '' });
 
+  const normalizedInputMode = useMemo(() => (String(inputMode).toLowerCase() === 'voice' ? 'voice' : 'text'), [inputMode]);
+
   function toggleComorbidity(c) {
     setComorbidities((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]));
   }
 
-  // ── Step 1 submit ──────────────────────────────────────────────────────────
+  async function askNextQuestion(baseHistory) {
+    try {
+      setAskingNext(true);
+      const result = await triageChatNext(baseHistory);
+      const nextQuestion = Array.isArray(result?.questions) ? result.questions[0] : null;
+
+      if (!nextQuestion) {
+        onError?.('No follow-up question returned by triage AI');
+        setStep(normalizedInputMode === 'voice' ? 'voice' : 'chat');
+        return;
+      }
+
+      if (nextQuestion === TRIAGE_COMPLETE_TOKEN) {
+        setStep('context');
+        return;
+      }
+
+      setCurrentQuestion(nextQuestion);
+      setHistory((prev) => {
+        if (prev.length && prev[prev.length - 1]?.role === 'assistant' && prev[prev.length - 1]?.content === nextQuestion) {
+          return prev;
+        }
+        return [...prev, { role: 'assistant', content: nextQuestion }];
+      });
+
+      setStep(normalizedInputMode === 'voice' ? 'voice' : 'chat');
+    } catch (error) {
+      onError?.(error?.message || 'Could not fetch AI questions');
+      setStep(normalizedInputMode === 'voice' ? 'voice' : 'initial');
+    } finally {
+      setAskingNext(false);
+    }
+  }
+
+  // ── Text bootstrap ──────────────────────────────────────────────────────────
   async function handleInitialSubmit() {
     if (!problem.trim()) { setInitError('Please describe your problem.'); return; }
     if (!duration.trim()) { setInitError('Please enter how long you\'ve had it.'); return; }
@@ -66,65 +102,37 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
       availableDepartmentsCount: Array.isArray(availableDepartments) ? availableDepartments.length : 0
     });
 
-    const initialHistory = [
+    const seedHistory = [
       { role: 'assistant', content: 'What is your problem today?' },
       { role: 'user', content: problem.trim() },
       { role: 'assistant', content: 'How long have you had this problem?' },
       { role: 'user', content: duration.trim() }
     ];
-    setHistory(initialHistory);
-    setStep('ai_loading');
-
-    try {
-      const result = await triageChatNext(initialHistory);
-      const questions = (result?.questions || []).slice(0, MAX_AI_QUESTIONS);
-      console.log('[TriageForm] chat_next_success', {
-        requestedHistoryLength: initialHistory.length,
-        returnedQuestions: Array.isArray(questions) ? questions.length : 0
-      });
-      if (!questions.length) {
-        console.log('[TriageForm] chat_next_empty_questions_fallback_to_context');
-        setStep('context');
-        return;
-      }
-      setAiQuestions(questions);
-      setAiQIdx(0);
-      setCurrentAnswer('');
-      setStep('ai_chat');
-    } catch (err) {
-      console.log('[TriageForm] chat_next_error', { message: err?.message || 'unknown error' });
-      onError?.(err.message || 'Could not fetch AI questions');
-      setStep('initial');
-    }
+    setHistory(seedHistory);
+    setCurrentAnswer('');
+    await askNextQuestion(seedHistory);
   }
 
-  // ── Step 3: answer AI question ─────────────────────────────────────────────
-  function handleAiAnswerNext() {
+  function handleVoiceHistoryComplete(finalHistory) {
+    setHistory(finalHistory || []);
+    setStep('context');
+  }
+
+  // ── Text mode answer submit ─────────────────────────────────────────────────
+  async function handleTextAnswerNext() {
     if (!currentAnswer.trim()) { setAnswerError('Please type your answer.'); return; }
     setAnswerError('');
 
-    const newHistory = [
+    const updatedHistory = [
       ...history,
-      { role: 'assistant', content: aiQuestions[aiQIdx] },
       { role: 'user', content: currentAnswer.trim() }
     ];
-    setHistory(newHistory);
+    setHistory(updatedHistory);
     setCurrentAnswer('');
-
-    console.log('[TriageForm] answer_recorded', {
-      currentQuestionIndex: aiQIdx,
-      totalQuestions: aiQuestions.length,
-      historyLength: newHistory.length
-    });
-
-    if (aiQIdx + 1 < aiQuestions.length) {
-      setAiQIdx((prev) => prev + 1);
-    } else {
-      setStep('context');
-    }
+    await askNextQuestion(updatedHistory);
   }
 
-  // ── Step 4: final submit ───────────────────────────────────────────────────
+  // ── Final submit ────────────────────────────────────────────────────────────
   async function handleContextSubmit() {
     const submitStartedAt = Date.now();
     setStep('submitting');
@@ -179,31 +187,30 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
     }
   }
 
-  // ── Loading screens ────────────────────────────────────────────────────────
-  if (step === 'ai_loading' || step === 'submitting') {
+  if (step === 'submitting') {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>
-          {step === 'ai_loading' ? 'AI is generating questions\u2026' : 'Analyzing with AI\u2026'}
-        </Text>
+        <Text style={styles.loadingText}>Analyzing with AI\u2026</Text>
       </View>
     );
   }
 
-  // ── Step 3: AI chat ────────────────────────────────────────────────────────
-  if (step === 'ai_chat') {
-    const totalQ = aiQuestions.length;
+  if (normalizedInputMode === 'voice' && (step === 'initial' || step === 'voice' || step === 'chat') && step !== 'context') {
+    return (
+      <VoiceTriageAgent
+        onComplete={handleVoiceHistoryComplete}
+        onError={(message) => onError?.(message)}
+      />
+    );
+  }
+
+  if (step === 'chat') {
     return (
       <View style={styles.wrap}>
-        <View style={styles.progressRow}>
-          <Text style={styles.stepLabel}>Question {aiQIdx + 1} of {totalQ}</Text>
-          <View style={styles.progressBar}>
-            <View style={[styles.progressFill, { width: `${((aiQIdx + 1) / totalQ) * 100}%` }]} />
-          </View>
-        </View>
+        <Text style={styles.title}>AI Triage</Text>
+        <Text style={styles.subtitle}>Answer the dynamic follow-up questions below.</Text>
 
-        {/* Previous Q&A history */}
         {history.length > 0 && (
           <View style={styles.chatHistory}>
             {history.map((msg, i) => (
@@ -216,11 +223,12 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
           </View>
         )}
 
-        {/* Current AI question */}
-        <View style={styles.currentQ}>
-          <Text style={styles.aiQLabel}>AI</Text>
-          <Text style={styles.aiQText}>{aiQuestions[aiQIdx]}</Text>
-        </View>
+        {currentQuestion ? (
+          <View style={styles.currentQ}>
+            <Text style={styles.aiQLabel}>AI</Text>
+            <Text style={styles.aiQText}>{currentQuestion}</Text>
+          </View>
+        ) : null}
 
         <TextInput
           value={currentAnswer}
@@ -233,16 +241,13 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
         />
         {answerError ? <Text style={styles.errorText}>{answerError}</Text> : null}
 
-        <TouchableOpacity style={styles.btn} onPress={handleAiAnswerNext}>
-          <Text style={styles.btnText}>
-            {aiQIdx + 1 < totalQ ? 'Next \u2192' : 'Continue to Details \u2192'}
-          </Text>
+        <TouchableOpacity style={styles.btn} onPress={handleTextAnswerNext} disabled={askingNext}>
+          {askingNext ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Next \u2192</Text>}
         </TouchableOpacity>
       </View>
     );
   }
 
-  // ── Step 4: context form ───────────────────────────────────────────────────
   if (step === 'context') {
     return (
       <View style={styles.wrap}>
@@ -297,7 +302,6 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
     );
   }
 
-  // ── Step 1: initial (default) ──────────────────────────────────────────────
   return (
     <View style={styles.wrap}>
       <Text style={styles.title}>AI Triage</Text>
@@ -324,8 +328,8 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
 
       {initError ? <Text style={styles.errorText}>{initError}</Text> : null}
 
-      <TouchableOpacity style={styles.btn} onPress={handleInitialSubmit}>
-        <Text style={styles.btnText}>Next \u2192</Text>
+      <TouchableOpacity style={styles.btn} onPress={handleInitialSubmit} disabled={askingNext}>
+        {askingNext ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Start Dynamic Questions \u2192</Text>}
       </TouchableOpacity>
     </View>
   );
@@ -337,10 +341,6 @@ const styles = StyleSheet.create({
   loadingText: { marginTop: spacing.md, color: colors.muted, fontFamily: 'Inter_400Regular', fontSize: 15 },
   title: { fontFamily: 'Inter_700Bold', fontSize: 20, color: colors.text, marginBottom: 4 },
   subtitle: { fontFamily: 'Inter_400Regular', color: colors.muted, marginBottom: spacing.md, fontSize: 13 },
-  progressRow: { marginBottom: spacing.md },
-  stepLabel: { fontFamily: 'Inter_600SemiBold', color: colors.primary, marginBottom: 6, fontSize: 13 },
-  progressBar: { height: 4, backgroundColor: colors.border, borderRadius: radii.pill, overflow: 'hidden' },
-  progressFill: { height: '100%', backgroundColor: colors.primary, borderRadius: radii.pill },
   label: { fontFamily: 'Inter_600SemiBold', color: colors.primaryDark, marginTop: spacing.sm, marginBottom: 6 },
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, paddingHorizontal: 12, paddingVertical: 10, fontFamily: 'Inter_400Regular', backgroundColor: '#fdfefe' },
   inputTall: { minHeight: 80 },

@@ -10,6 +10,7 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@react-native-voice/voice": "^3.2.4",
     "@expo-google-fonts/inter": "^0.4.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "^54.0.0",
@@ -24,6 +25,7 @@
     "expo-web-browser": "^15.0.10",
     "react": "19.1.0",
     "react-native": "0.81.5",
+    "react-native-tts": "^4.1.1",
     "socket.io-client": "^4.8.3",
     "zustand": "^5.0.11"
   }

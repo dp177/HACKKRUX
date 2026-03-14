@@ -7,10 +7,18 @@
     "orientation": "portrait",
     "platforms": ["ios", "android", "web"],
     "android": {
-      "package": "com.hackkrux.triagepatientapp"
+      "package": "com.hackkrux.triagepatientapp",
+      "permissions": ["RECORD_AUDIO"]
     },
     "ios": {
-      "bundleIdentifier": "com.hackkrux.triagepatientapp"
-    }
+      "bundleIdentifier": "com.hackkrux.triagepatientapp",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Microphone access is required for voice triage.",
+        "NSSpeechRecognitionUsageDescription": "Speech recognition is required to convert your voice to text during triage."
+      }
+    },
+    "plugins": [
+      "expo-notifications"
+    ]
   }
 }
