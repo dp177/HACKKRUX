@@ -259,13 +259,13 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
   async function handleContextSubmit() {
     const submitStartedAt = Date.now();
     setStep('submitting');
+    const submitAction = mode === 'queue' ? 'Submit & Join Queue' : 'Submit & Continue Booking';
     const payload = {
       patient_id: patientId,
       department_id: departmentId || null,
       hospital_id: hospitalId || null,
       input_mode: effectiveInputMode,
       conversation_history: history,
-      available_departments: availableDepartments || [],
       context: {
         is_conscious: true,
         breathing_difficulty: breathing,
@@ -285,6 +285,8 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
     try {
       console.log('[TriageForm] analyze_submit', {
         debugSessionId,
+        submitAction,
+        mode,
         patientId,
         departmentId: payload.department_id,
         hospitalId: payload.hospital_id,
@@ -293,7 +295,16 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
         hasAttachment: Boolean(attachment?.uri),
         attachmentName: attachment?.name || null,
         hasVitals: Object.values(payload.vitals || {}).some((v) => String(v || '').trim() !== ''),
-        comorbidityCount: payload.context?.comorbidities?.length || 0
+        comorbidityCount: payload.context?.comorbidities?.length || 0,
+        outgoingPayload: payload,
+        attachmentMeta: attachment
+          ? {
+              uri: attachment.uri || null,
+              name: attachment.name || null,
+              type: attachment.type || null,
+              size: attachment.size || null
+            }
+          : null
       });
       const result = await triageAnalyze(payload, token, attachment || null);
       console.log('[TriageForm] analyze_success', {

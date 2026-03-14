@@ -560,19 +560,55 @@ export async function triageTranscribeAudio({ fileUri, token, languageCode = 'en
  * Returns the standard { triage, queue, aiRaw } shape the app expects.
  */
 export async function triageAnalyze(payload, token, file = null) {
+  function normalizeAnalyzePayload(input) {
+    const base = { ...(input || {}) };
+
+    const chosenDepartment =
+      base.chosen_department
+      || base.choosen_department
+      || base.chosenDepartment
+      || base.choosenDepartment
+      || base.department_name
+      || base.departmentName
+      || base.department_id
+      || base.departmentId
+      || null;
+
+    // The backend/AI contract should receive choosen_department (legacy key) and not available_departments.
+    delete base.available_departments;
+    delete base.availableDepartments;
+    delete base.chosen_department;
+    delete base.chosenDepartment;
+
+    if (chosenDepartment) {
+      base.choosen_department = String(chosenDepartment);
+    }
+
+    return base;
+  }
+
+  const analyzePayload = normalizeAnalyzePayload(payload);
   const traceId = `mtriage_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   console.log('[MobileAPI] triage_analyze_start', {
     traceId,
     hasFile: Boolean(file),
     hasToken: Boolean(token),
-    patientId: payload?.patient_id || null,
-    departmentId: payload?.department_id || null,
-    historyLength: Array.isArray(payload?.conversation_history) ? payload.conversation_history.length : 0
+    patientId: analyzePayload?.patient_id || null,
+    choosenDepartment: analyzePayload?.choosen_department || null,
+    historyLength: Array.isArray(analyzePayload?.conversation_history) ? analyzePayload.conversation_history.length : 0,
+    outgoingPayload: analyzePayload
   });
 
   function buildAnalyzeFormData() {
     const formData = new FormData();
-    formData.append('payload', JSON.stringify(payload || {}));
+    const payloadString = JSON.stringify(analyzePayload || {});
+    formData.append('payload', payloadString);
+
+    console.log('[MobileAPI] triage_analyze_form_payload', {
+      traceId,
+      payloadString,
+      payloadLength: payloadString.length
+    });
 
     if (file) {
       formData.append('file', {
@@ -591,7 +627,13 @@ export async function triageAnalyze(payload, token, file = null) {
       traceId,
       url,
       transport: 'multipart/form-data',
-      hasFile: Boolean(file)
+      hasFile: Boolean(file),
+      hasChoosenDepartment: Boolean(analyzePayload?.choosen_department),
+      hasAvailableDepartmentsField: Boolean(
+        Object.prototype.hasOwnProperty.call(analyzePayload || {}, 'available_departments')
+        || Object.prototype.hasOwnProperty.call(analyzePayload || {}, 'availableDepartments')
+      ),
+      outgoingPayload: analyzePayload
     });
 
     const formData = buildAnalyzeFormData();

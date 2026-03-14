@@ -108,7 +108,7 @@ async function getNextQuestions(conversationHistory) {
 }
 
 async function postAiAnalyzeMultipart(payload, file) {
-  const uploadPaths = ['/api/v1/analyze-triage', '/analyze-triage'];
+  const uploadPaths = ['/api/v1/analyze-triage'];
   let lastUploadError = null;
 
   for (const baseUrl of AI_BASE_CANDIDATES) {
@@ -208,7 +208,7 @@ async function analyzeTriage(payload, file) {
         status: error?.status || null,
         message: error?.message || 'unknown error'
       });
-      const data = await postAiJson(['/api/v1/analyze-triage', '/analyze-triage'], payload || {});
+      const data = await postAiJson(['/api/v1/analyze-triage'], payload || {});
       console.log('[TriageService] analyze_json_fallback_success', {
         riskScore: data?.risk_score ?? null,
         urgency: data?.urgency_level ?? null,
