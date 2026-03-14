@@ -10,11 +10,24 @@
   body {
     margin: 0;
     @apply font-primaryfont bg-slate-50 text-slate-800 antialiased;
-    background-image: radial-gradient(circle at 8% 10%, rgba(63, 159, 118, 0.08), transparent 35%);
+    background-image: none;
   }
 
   h1, h2, h3, p {
     margin-top: 0;
+  }
+
+  h1, h2, h3 {
+    letter-spacing: -0.025em;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  ::selection {
+    background-color: rgba(63, 159, 118, 0.2);
+    color: #1f4232;
   }
 
   input, select, button, textarea {
@@ -30,11 +43,9 @@
   }
 
   button {
-    @apply rounded-xl bg-accent-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-700;
-  }
-
-  button.secondary {
-    @apply bg-slate-600 hover:bg-slate-700;
+    background: none;
+    border: 0;
+    padding: 0;
   }
 
   button:disabled {

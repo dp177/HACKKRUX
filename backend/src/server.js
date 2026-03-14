@@ -144,7 +144,7 @@ app.use('/api/v1', require('./routes/whatsapp'));
 // Hospital onboarding request routes (public)
 app.use('/api/hospital-onboarding', require('./features/hospital-onboarding/hospitalOnboardingRoutes'));
 
-// Admin onboarding review routes (protected by ADMIN_ONBOARDING_KEY header)
+// Admin onboarding review routes (protected by admin basic auth)
 app.use('/api/admin', require('./features/admin/adminRoutes'));
 
 // Hospital portal routes (hospital admin/receptionist auth)

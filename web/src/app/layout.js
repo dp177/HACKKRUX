@@ -8,8 +8,8 @@ const primaryFont = Inter({
 });
 
 export const metadata = {
-  title: 'Triage Platform',
-  description: 'Hospital onboarding, portal operations, and doctor workflow tools'
+  title: 'Jeeva — AI-Powered Clinical Triage & Decision Support',
+  description: 'Helping hospitals prioritize patients, assist doctors with intelligent triage, and streamline medical workflows.'
 };
 
 export default function RootLayout({ children }) {

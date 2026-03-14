@@ -3,24 +3,46 @@ const controller = require('./adminController');
 
 const router = express.Router();
 
-function requireAdminOnboardingKey(req, res, next) {
-  const expectedKey = String(process.env.ADMIN_ONBOARDING_KEY || '').trim();
+function parseBasicAuth(authorizationHeader) {
+  const value = String(authorizationHeader || '').trim();
+  if (!value.startsWith('Basic ')) return null;
 
-  if (!expectedKey) {
-    return res.status(500).json({ error: 'ADMIN_ONBOARDING_KEY is not configured' });
+  const base64 = value.slice(6).trim();
+  if (!base64) return null;
+
+  try {
+    const decoded = Buffer.from(base64, 'base64').toString('utf8');
+    const separatorIndex = decoded.indexOf(':');
+    if (separatorIndex <= 0) return null;
+
+    return {
+      username: decoded.slice(0, separatorIndex),
+      password: decoded.slice(separatorIndex + 1)
+    };
+  } catch {
+    return null;
   }
+}
 
-  const providedKey = String(req.headers['x-admin-onboarding-key'] || '').trim();
-  if (!providedKey || providedKey !== expectedKey) {
-    return res.status(403).json({ error: 'Invalid admin onboarding key' });
+function requireAdminBasicAuth(req, res, next) {
+  const expectedUsername = String(process.env.ADMIN_BASIC_USER || 'admin').trim();
+  const expectedPassword = String(process.env.ADMIN_BASIC_PASSWORD || 'jeevaadmin123').trim();
+
+  const parsed = parseBasicAuth(req.headers.authorization);
+  const valid = parsed && parsed.username === expectedUsername && parsed.password === expectedPassword;
+
+  if (!valid) {
+    res.set('WWW-Authenticate', 'Basic realm="Jeeva Admin"');
+    return res.status(401).json({ error: 'Admin authentication required' });
   }
 
   return next();
 }
 
-router.use(requireAdminOnboardingKey);
+router.use(requireAdminBasicAuth);
 
 router.get('/onboarding/requests', controller.getOnboardingRequests);
+router.get('/hospitals/overview', controller.getHospitalOverview);
 router.post('/onboarding/requests/:requestId/approve', controller.approveOnboardingRequest);
 router.post('/onboarding/requests/:requestId/reject', controller.rejectOnboardingRequest);
 

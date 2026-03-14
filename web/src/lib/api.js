@@ -223,33 +223,49 @@ export async function submitHospitalOnboardingRequest(payload) {
   });
 }
 
-export async function getAdminOnboardingRequests(status, adminKey) {
+function toAdminAuthHeader(auth) {
+  const username = String(auth?.username || '').trim();
+  const password = String(auth?.password || '').trim();
+
+  if (!username || !password) {
+    throw new Error('Admin username and password are required');
+  }
+
+  return `Basic ${btoa(`${username}:${password}`)}`;
+}
+
+export async function getAdminOnboardingRequests(status, auth) {
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
-  const resolvedAdminKey = String(adminKey || '').trim();
   return request(`/admin/onboarding/requests${query}`, {
     headers: {
-      'x-admin-onboarding-key': resolvedAdminKey
+      Authorization: toAdminAuthHeader(auth)
     }
   });
 }
 
-export async function approveAdminOnboardingRequest(requestId, payload, adminKey) {
-  const resolvedAdminKey = String(adminKey || '').trim();
+export async function getAdminHospitalsOverview(auth) {
+  return request('/admin/hospitals/overview', {
+    headers: {
+      Authorization: toAdminAuthHeader(auth)
+    }
+  });
+}
+
+export async function approveAdminOnboardingRequest(requestId, payload, auth) {
   return request(`/admin/onboarding/requests/${encodeURIComponent(requestId)}/approve`, {
     method: 'POST',
     headers: {
-      'x-admin-onboarding-key': resolvedAdminKey
+      Authorization: toAdminAuthHeader(auth)
     },
     body: JSON.stringify(payload)
   });
 }
 
-export async function rejectAdminOnboardingRequest(requestId, payload, adminKey) {
-  const resolvedAdminKey = String(adminKey || '').trim();
+export async function rejectAdminOnboardingRequest(requestId, payload, auth) {
   return request(`/admin/onboarding/requests/${encodeURIComponent(requestId)}/reject`, {
     method: 'POST',
     headers: {
-      'x-admin-onboarding-key': resolvedAdminKey
+      Authorization: toAdminAuthHeader(auth)
     },
     body: JSON.stringify(payload)
   });

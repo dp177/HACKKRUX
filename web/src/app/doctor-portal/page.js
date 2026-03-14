@@ -40,7 +40,7 @@ const PRIORITY_META = {
   critical: { label: 'Critical', color: 'bg-red-100 text-red-700 border-red-200' },
   high: { label: 'High', color: 'bg-orange-100 text-orange-700 border-orange-200' },
   medium: { label: 'Moderate', color: 'bg-yellow-100 text-yellow-700 border-yellow-200' },
-  low: { label: 'Low', color: 'bg-emerald-100 text-emerald-700 border-emerald-200' }
+  low: { label: 'Low', color: 'bg-violet-100 text-violet-700 border-violet-200' }
 };
 
 const DEFAULT_AVAILABILITY = [
@@ -747,7 +747,7 @@ export default function DoctorPortalPage() {
                 <button
                   key={item.rowKey}
                   type="button"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-slate-700 hover:border-accent-300"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-slate-700 hover:border-violet-300"
                   onClick={() => handleSelectQueuePatient(item)}
                 >
                   <p className="text-sm font-semibold">{item.name}</p>
@@ -1016,7 +1016,7 @@ export default function DoctorPortalPage() {
                 <div className="rounded-xl border border-slate-200 bg-white p-3">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm font-semibold text-slate-800">Create Prescription</p>
-                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                    <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-xs font-semibold text-violet-700">
                       {prescriptionForm.medicines.length} medicines added
                     </span>
                   </div>
@@ -1445,10 +1445,10 @@ export default function DoctorPortalPage() {
 
             <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline Concept</p>
-              <div className="mt-2 h-5 w-full rounded-full bg-emerald-100">
-                <div className="h-5 rounded-full bg-emerald-500" style={{ width: '70%' }} />
+              <div className="mt-2 h-5 w-full rounded-full bg-violet-100">
+                <div className="h-5 rounded-full bg-violet-500" style={{ width: '70%' }} />
               </div>
-              <p className="mt-1 text-xs text-slate-500">Green bar: appointment window. Add breaks to carve blocked segments.</p>
+              <p className="mt-1 text-xs text-slate-500">Purple bar: appointment window. Add breaks to carve blocked segments.</p>
             </div>
           </div>
 
@@ -1539,7 +1539,7 @@ export default function DoctorPortalPage() {
                   <div key={slot.slotId} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
                     <p className="text-xs text-slate-500">{selectedDateMeta.day} {selectedDateMeta.shortDate}</p>
                     <p className="font-semibold text-slate-800">{slot.startTime} - {slot.endTime}</p>
-                    <p className={`mt-1 text-xs font-semibold ${slot.status === 'AVAILABLE' ? 'text-emerald-700' : slot.status === 'BOOKED' ? 'text-amber-700' : 'text-slate-600'}`}>
+                    <p className={`mt-1 text-xs font-semibold ${slot.status === 'AVAILABLE' ? 'text-violet-700' : slot.status === 'BOOKED' ? 'text-amber-700' : 'text-slate-600'}`}>
                       {slot.status}
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2">
@@ -1745,7 +1745,7 @@ export default function DoctorPortalPage() {
       <section className="grid gap-6 lg:grid-cols-[250px_1fr]">
         <aside className="card h-fit">
           <div className="mb-5">
-            <p className="text-xs uppercase tracking-[0.14em] text-accent-700">Doctor Portal</p>
+            <p className="text-xs uppercase tracking-[0.14em] text-violet-700">Doctor Portal</p>
             <h1 className="mt-1 text-xl font-semibold text-slate-900">Fast Situational Awareness</h1>
           </div>
 

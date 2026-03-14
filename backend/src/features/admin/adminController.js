@@ -36,8 +36,18 @@ async function rejectOnboardingRequest(req, res) {
   }
 }
 
+async function getHospitalOverview(req, res) {
+  try {
+    const hospitals = await adminService.listHospitalOverview();
+    return res.json({ hospitals });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+}
+
 module.exports = {
   getOnboardingRequests,
   approveOnboardingRequest,
-  rejectOnboardingRequest
+  rejectOnboardingRequest,
+  getHospitalOverview
 };
