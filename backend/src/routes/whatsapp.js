@@ -957,7 +957,7 @@ router.post('/whatsapp-booking', async (req, res) => {
         sender: maskPhone(senderId),
         aiQuestionCount: aiQuestions.length
       });
-      return sendAssistant(conversation, res, `I understand. Let me ask a follow-up:\n\n${aiQuestions[0]}`);
+      return sendAssistant(conversation, res, aiQuestions[0]);
     }
 
     if (step === 'ask_ai_1') {
