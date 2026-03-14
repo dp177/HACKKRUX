@@ -84,6 +84,11 @@ export default function AppointmentsScreen({ mode = 'upcoming' }) {
               <Text style={styles.doctor}>{item.doctorName || 'Doctor'} {item.department ? `• ${item.department}` : ''}</Text>
               <Text style={styles.meta}>{formatDate(item.date)} • {item.time}</Text>
               <Text style={styles.status}>Status: {item.status || '-'}</Text>
+              {isHistoryMode ? (
+                <Text style={styles.status}>
+                  Previously booked slot: {item.date} {item.time}{item.slotId ? ` (ID: ${item.slotId})` : ''}
+                </Text>
+              ) : null}
 
               {!isHistoryMode && (
                 <View style={styles.actions}>

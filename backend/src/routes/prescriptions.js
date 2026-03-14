@@ -7,7 +7,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
 const { Prescription, Queue, Patient, Doctor } = require('../models');
-const { authenticateDoctor } = require('../middleware/auth');
+const { authenticateDoctor, authenticatePatient } = require('../middleware/auth');
 
 function normalizeOptionalString(value) {
   if (value === undefined || value === null) return null;
@@ -122,6 +122,40 @@ router.get('/patient/:patientId', authenticateDoctor, async (req, res) => {
   } catch (error) {
     console.error('Error fetching patient prescription history:', error);
     return res.status(500).json({ error: 'Failed to fetch patient prescription history' });
+  }
+});
+
+router.get('/me', authenticatePatient, async (req, res) => {
+  try {
+    const patientId = String(req.patient.id);
+
+    const history = await Prescription.find({ patientId })
+      .populate('doctorId', 'firstName lastName')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json(history.map((item) => ({
+      id: String(item._id),
+      date: item.createdAt,
+      diagnosis: item?.form?.diagnosis || null,
+      temperature: item?.form?.temperature || null,
+      bloodPressure: item?.form?.bloodPressure || null,
+      notes: item?.form?.notes || null,
+      medicines: (item.medicines || []).map((m) => ({
+        name: m?.name || null,
+        dosage: m?.dosage || null,
+        frequency: m?.frequency || null,
+        duration: m?.duration || null,
+        instructions: m?.instructions || null
+      })).filter((m) => m.name),
+      remarks: item?.remarks || null,
+      doctorName: item?.doctorId
+        ? `Dr. ${item.doctorId.firstName || ''} ${item.doctorId.lastName || ''}`.trim()
+        : null
+    })));
+  } catch (error) {
+    console.error('Error fetching own prescription history:', error);
+    return res.status(500).json({ error: 'Failed to fetch prescription history' });
   }
 });
 

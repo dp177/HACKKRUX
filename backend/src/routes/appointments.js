@@ -604,7 +604,8 @@ router.get('/history', authenticatePatient, async (req, res) => {
         department: apt.departmentId?.name || null,
         date: apt.scheduledDate,
         time: apt.scheduledTime,
-        status: String(apt.status || '').toUpperCase()
+        status: String(apt.status || '').toUpperCase(),
+        slotId: apt.slotId || null
       }))
     });
   } catch (error) {

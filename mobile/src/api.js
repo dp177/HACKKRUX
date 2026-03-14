@@ -115,6 +115,12 @@ export function getAppointmentHistory(token) {
   });
 }
 
+export function getMyPrescriptions(token) {
+  return request('/prescriptions/me', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export function cancelAppointment(appointmentId, token, reason = 'Cancelled by patient') {
   return request('/appointments/cancel', {
     method: 'POST',
