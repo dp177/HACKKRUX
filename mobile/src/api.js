@@ -1,13 +1,24 @@
 import { Platform } from 'react-native';
 
+const REMOTE_API_BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL || 'https://jeeva-hackcrux.onrender.com/api').replace(/\/$/, '');
+
+function parseCsvEnv(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => item.replace(/\/$/, ''));
+}
+
 const DEFAULT_API_BASE_URL = Platform.select({
-  android: 'http://10.0.2.2:5000/api',
-  ios: 'http://localhost:5000/api',
-  default: 'http://localhost:5000/api'
+  android: REMOTE_API_BASE_URL,
+  ios: REMOTE_API_BASE_URL,
+  default: REMOTE_API_BASE_URL
 });
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
+const API_BASE_URL = REMOTE_API_BASE_URL || DEFAULT_API_BASE_URL;
 const ENABLE_LOCAL_TRIAGE_FALLBACK = String(process.env.EXPO_PUBLIC_ENABLE_LOCAL_TRIAGE_FALLBACK || '').toLowerCase() === 'true';
+const LOCAL_API_BASE_CANDIDATES = parseCsvEnv(process.env.EXPO_PUBLIC_LOCAL_API_BASE_URLS);
 
 async function request(path, options = {}) {
   const url = `${API_BASE_URL}${path}`;
@@ -264,8 +275,7 @@ export function getDoctorAvailableSlots(doctorId, date) {
   async function tryLocalFallbacks() {
     const localBases = [
       DEFAULT_API_BASE_URL,
-      'http://10.0.2.2:5000/api',
-      'http://localhost:5000/api'
+      ...LOCAL_API_BASE_CANDIDATES
     ];
 
     const uniqueBases = [...new Set(localBases.filter(Boolean))];
@@ -595,7 +605,7 @@ export async function triageAnalyze(payload, token, file = null) {
       && (messageText.includes('failed to analyze triage') || detailsText.includes('not found'));
 
     if (shouldTryLocalFallback) {
-      const localBases = ['http://10.0.2.2:5000/api', 'http://localhost:5000/api'];
+      const localBases = [...LOCAL_API_BASE_CANDIDATES];
       for (const base of localBases) {
         try {
           console.log('[MobileAPI] triage_analyze_local_fallback_try', { traceId, base });
@@ -606,11 +616,17 @@ export async function triageAnalyze(payload, token, file = null) {
           // try next local candidate
         }
       }
+
+      console.log('[MobileAPI] triage_analyze_local_fallback_exhausted', {
+        traceId,
+        candidates: localBases.length
+      });
     } else {
       console.log('[MobileAPI] triage_analyze_local_fallback_skipped', {
         traceId,
         enabled: ENABLE_LOCAL_TRIAGE_FALLBACK,
-        apiBaseUrl: API_BASE_URL
+        apiBaseUrl: API_BASE_URL,
+        localCandidateCount: LOCAL_API_BASE_CANDIDATES.length
       });
     }
 

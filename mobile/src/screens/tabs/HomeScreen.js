@@ -17,6 +17,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import Constants from 'expo-constants';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   bookAppointment,
@@ -359,6 +360,27 @@ export default function HomeScreen() {
         setFallbackInfo({ level: 'department', name: department?.name || 'Selected department' });
         pushRoute('no_doctors');
       }
+      return;
+    }
+
+    const isExpoGo = Constants.appOwnership === 'expo';
+
+    if (isExpoGo) {
+      console.log('[HomeFlow] voice_mode_blocked_expo_go', { departmentId: department.id });
+      Alert.alert(
+        'Voice Needs Dev Build',
+        'Voice input is not supported in Expo Go. Continuing with Text Input.',
+        [
+          {
+            text: 'Continue',
+            onPress: () => {
+              setTriageInputMode('text');
+              pushRoute('triage');
+            }
+          }
+        ],
+        { cancelable: true }
+      );
       return;
     }
 

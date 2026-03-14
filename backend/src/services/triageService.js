@@ -2,7 +2,7 @@ const axios = require('axios');
 
 function normalizeAiBaseUrl(raw) {
   const cleaned = String(raw || '').trim().replace(/\/$/, '');
-  if (!cleaned) return 'http://localhost:5001';
+  if (!cleaned) return '';
 
   // Accept env values like:
   // - https://host

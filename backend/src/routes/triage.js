@@ -17,7 +17,7 @@ const {
   recalculateDepartmentQueue
 } = require('../services/queueService');
 
-const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001';
+const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || TRIAGE_AI_URL;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 
 function parseMaybeJson(value, fallback = null) {

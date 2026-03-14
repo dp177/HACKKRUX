@@ -472,8 +472,8 @@ router.post('/whatsapp-booking', async (req, res) => {
   const senderRaw = req.body?.From;
   const bodyRaw = req.body?.Body;
   const senderId = normalizePhone(senderRaw);
-  const userMsg = String(bodyRaw || '').trim();
-  const command = normalizeCommand(userMsg);
+  let userMsg = String(bodyRaw || '').trim();
+  let command = normalizeCommand(userMsg);
 
   const longRunningTimer = setTimeout(() => {
     logEvent('warn', 'webhook_long_running', {
@@ -617,7 +617,7 @@ router.post('/whatsapp-booking', async (req, res) => {
       }
     }
     // Update the command in case it was a voice note saying "Restart"
-    const command = normalizeCommand(userMsg);
+    command = normalizeCommand(userMsg);
 
     if (!userMsg) {
       return sendAssistant(conversation, res, 'Please send a number from the menu, or reply MENU to restart.');
