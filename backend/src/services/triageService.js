@@ -104,32 +104,30 @@ async function getNextQuestions(conversationHistory) {
   return data;
 }
 
-async function analyzeTriage(payload, file) {
-  const historyLength = Array.isArray(payload?.conversation_history) ? payload.conversation_history.length : 0;
-  console.log('[TriageService] analyze request', {
-    aiCandidates: AI_BASE_CANDIDATES,
-    hasFile: Boolean(file?.buffer?.length),
-    historyLength,
-    patientId: payload?.patient_id || null
-  });
+async function postAiAnalyzeMultipart(payload, file) {
+  const uploadPaths = ['/api/v1/analyze-triage', '/analyze-triage'];
+  let lastUploadError = null;
 
-  if (file?.buffer?.length) {
-    // Use built-in fetch + FormData so no extra dependency is required.
-    const form = new FormData();
-    form.append('payload', JSON.stringify(payload || {}));
-    form.append(
-      'file',
-      new Blob([file.buffer], { type: file.mimetype || 'application/octet-stream' }),
-      file.originalname || 'upload.bin'
-    );
+  for (const baseUrl of AI_BASE_CANDIDATES) {
+    for (const path of uploadPaths) {
+      const endpoint = `${baseUrl}${path}`;
+      try {
+        const form = new FormData();
+        form.append('payload', JSON.stringify(payload || {}));
 
-    const uploadPaths = ['/api/v1/analyze-triage', '/analyze-triage'];
+        if (file?.buffer?.length) {
+          form.append(
+            'file',
+            new Blob([file.buffer], { type: file.mimetype || 'application/octet-stream' }),
+            file.originalname || 'upload.bin'
+          );
+        }
 
-    let lastUploadError = null;
-    for (const baseUrl of AI_BASE_CANDIDATES) {
-      for (const path of uploadPaths) {
-        const endpoint = `${baseUrl}${path}`;
-        console.log('[TriageService] try_file_endpoint', { endpoint });
+        console.log('[TriageService] try_multipart_endpoint', {
+          endpoint,
+          hasFile: Boolean(file?.buffer?.length)
+        });
+
         const response = await fetch(endpoint, {
           method: 'POST',
           body: form
@@ -137,7 +135,8 @@ async function analyzeTriage(payload, file) {
 
         if (response.ok) {
           const data = await response.json();
-          console.log('[TriageService] analyze file response', {
+          console.log('[TriageService] analyze multipart response', {
+            endpoint,
             riskScore: data?.risk_score ?? null,
             urgency: data?.urgency_level ?? null,
             department: data?.department ?? null
@@ -147,7 +146,9 @@ async function analyzeTriage(payload, file) {
 
         const text = await response.text();
         lastUploadError = new Error(`AI analyze failed (${response.status}) at ${endpoint}: ${text.slice(0, 300)}`);
-        console.error('[TriageService] analyze file error', {
+        lastUploadError.status = response.status;
+
+        console.error('[TriageService] analyze multipart error', {
           endpoint,
           status: response.status,
           body: text.slice(0, 500)
@@ -156,14 +157,32 @@ async function analyzeTriage(payload, file) {
         if (response.status !== 404) {
           throw lastUploadError;
         }
+      } catch (error) {
+        const status = error?.status || null;
+        lastUploadError = error;
+        if (status === 404) {
+          continue;
+        }
+        throw error;
       }
     }
-
-    throw lastUploadError || new Error('AI analyze upload failed');
   }
 
+  throw lastUploadError || new Error('AI analyze multipart request failed');
+}
+
+async function analyzeTriage(payload, file) {
+  const historyLength = Array.isArray(payload?.conversation_history) ? payload.conversation_history.length : 0;
+  console.log('[TriageService] analyze request', {
+    aiCandidates: AI_BASE_CANDIDATES,
+    hasFile: Boolean(file?.buffer?.length),
+    historyLength,
+    patientId: payload?.patient_id || null
+  });
+
   try {
-    const data = await postAiJson(['/api/v1/analyze-triage', '/analyze-triage'], payload || {});
+    // AI analyze endpoint expects multipart/form-data with a required "payload" field.
+    const data = await postAiAnalyzeMultipart(payload || {}, file);
     console.log('[TriageService] analyze response', {
       riskScore: data?.risk_score ?? null,
       urgency: data?.urgency_level ?? null,
@@ -171,6 +190,16 @@ async function analyzeTriage(payload, file) {
     });
     return data;
   } catch (error) {
+    const shouldTryJsonFallback = [400, 415, 422].includes(Number(error?.status || 0));
+    if (shouldTryJsonFallback) {
+      console.warn('[TriageService] analyze_multipart_failed_try_json_fallback', {
+        status: error?.status || null,
+        message: error?.message || 'unknown error'
+      });
+      const data = await postAiJson(['/api/v1/analyze-triage', '/analyze-triage'], payload || {});
+      return data;
+    }
+
     console.error('[TriageService] analyze error', {
       message: error?.message || 'unknown error',
       responseData: error?.response?.data || null
