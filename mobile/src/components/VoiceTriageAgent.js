@@ -17,6 +17,7 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
   const ttsRef = useRef(null);
   const ttsFinishSubscriptionRef = useRef(null);
   const shouldResumeListeningRef = useRef(false);
+  const ttsEnabledRef = useRef(true);
   const sessionIdRef = useRef(`voice_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
 
   useEffect(() => {
@@ -36,16 +37,30 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
         voiceRef.current = Voice;
         ttsRef.current = Tts;
 
+        if (typeof Tts?.getInitStatus === 'function') {
+          try {
+            await Tts.getInitStatus();
+            ttsEnabledRef.current = true;
+          } catch (ttsInitError) {
+            ttsEnabledRef.current = false;
+            console.log('[VoiceTriage] tts_init_unavailable', {
+              sessionId: sessionIdRef.current,
+              message: ttsInitError?.message || 'unknown error'
+            });
+          }
+        }
+
         Voice.onSpeechResults = handleSpeechResults;
         Voice.onSpeechError = handleSpeechError;
 
         console.log('[VoiceTriage] modules_ready', {
           sessionId: sessionIdRef.current,
           hasVoiceStart: Boolean(Voice?.start),
-          hasTtsSpeak: Boolean(Tts?.speak)
+          hasTtsSpeak: Boolean(Tts?.speak),
+          ttsEnabled: ttsEnabledRef.current
         });
 
-        if (typeof Tts?.addEventListener === 'function') {
+        if (ttsEnabledRef.current && typeof Tts?.addEventListener === 'function') {
           ttsFinishSubscriptionRef.current = Tts.addEventListener('tts-finish', () => {
             console.log('[VoiceTriage] tts_finish', {
               sessionId: sessionIdRef.current,
@@ -111,7 +126,10 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
 
   async function speak(text) {
     const Tts = ttsRef.current;
-    if (!Tts?.speak) return;
+    if (!Tts?.speak || !ttsEnabledRef.current) {
+      setSubtitle(`AI: ${text}`);
+      return false;
+    }
 
     try {
       setSpeaking(true);
@@ -120,15 +138,29 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
         sessionId: sessionIdRef.current,
         textLength: String(text || '').length
       });
-      await Tts.stop?.();
+
+      try {
+        await Tts.stop?.();
+      } catch (stopError) {
+        console.log('[VoiceTriage] speak_stop_error', {
+          sessionId: sessionIdRef.current,
+          message: stopError?.message || 'unknown error'
+        });
+      }
+
       Tts.speak(text, { rate: 0.48, pitch: 1.0 });
+      return true;
     } catch (error) {
       console.log('[VoiceTriage] speak_error', {
         sessionId: sessionIdRef.current,
         message: error?.message || 'unknown error'
       });
+
+      // Disable TTS for current session and continue voice capture without spoken prompts.
+      ttsEnabledRef.current = false;
       setSpeaking(false);
-      throw error;
+      setSubtitle(`AI: ${text}`);
+      return false;
     }
   }
 
@@ -199,7 +231,13 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
       const withAssistant = [...history, { role: 'assistant', content: nextQuestion }];
       setConversation(withAssistant);
       shouldResumeListeningRef.current = true;
-      await speak(nextQuestion);
+      const spoke = await speak(nextQuestion);
+
+      if (!spoke && shouldResumeListeningRef.current) {
+        shouldResumeListeningRef.current = false;
+        setSpeaking(false);
+        startListening();
+      }
     } catch (error) {
       shouldResumeListeningRef.current = false;
       console.log('[VoiceTriage] ask_next_error', {
