@@ -17,6 +17,52 @@ const {
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const GEMINI_API_KEY = process.env.WHATSAPP_GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.WHATSAPP_GEMINI_MODEL || 'gemini-1.5-flash';
+const { Translate } = require('@google-cloud/translate').v2;
+const speech = require('@google-cloud/speech');
+const axios = require('axios');
+
+// Automatically uses your GOOGLE_APPLICATION_CREDENTIALS env var
+const translateClient = new Translate();
+const speechClient = new speech.SpeechClient();
+
+async function translateText(text, targetLang) {
+  if (!targetLang || targetLang === 'en' || !text) return text;
+  try {
+    const [translation] = await translateClient.translate(text, targetLang);
+    return translation;
+  } catch (error) {
+    console.error('Translation error:', error);
+    return text; // Fallback to original text if translation fails
+  }
+}
+
+async function transcribeTwilioAudio(mediaUrl, languageCode = 'en-US') {
+  try {
+    // Download the audio file from Twilio
+    const response = await axios.get(mediaUrl, { responseType: 'arraybuffer' });
+    const audioBytes = Buffer.from(response.data).toString('base64');
+
+    // Twilio WhatsApp voice notes are typically OGG_OPUS at 16000Hz
+    const request = {
+      audio: { content: audioBytes },
+      config: {
+        encoding: 'OGG_OPUS',
+        sampleRateHertz: 16000, 
+        languageCode: languageCode,
+        alternativeLanguageCodes: ['en-US', 'hi-IN', 'gu-IN'] // Help Google guess
+      },
+    };
+
+    const [speechResponse] = await speechClient.recognize(request);
+    const transcription = speechResponse.results
+      .map(result => result.alternatives[0].transcript)
+      .join('\n');
+    return transcription;
+  } catch (error) {
+    console.error('Transcription error:', error);
+    return null;
+  }
+}
 
 function maskPhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
@@ -105,77 +151,6 @@ function getUpcomingDates(count = 3) {
     out.push(toDateOnlyIso(d));
   }
   return out;
-}
-
-// --- NEW: Audio Processing & Incoming Translation ---
-async function processIncomingMediaOrText(bodyRaw, mediaUrl, mimeType) {
-  if (!mediaUrl && !bodyRaw) return { text: '' };
-
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-  let parts = [];
-
-  if (mediaUrl) {
-     const audioRes = await fetch(mediaUrl);
-     const arrayBuffer = await audioRes.arrayBuffer();
-     parts.push({
-       inlineData: { mimeType: mimeType || 'audio/ogg', data: Buffer.from(arrayBuffer).toString('base64') }
-     });
-  }
-
-  if (bodyRaw) { parts.push({ text: bodyRaw }); }
-
-  // STRICTER PROMPT to prevent hallucinations
-  const prompt = `You are a strict data processor for a WhatsApp medical bot.
-  1. If audio is provided, transcribe it.
-  2. Translate the input meaning into ENGLISH so the backend can process it. 
-     - CRITICAL: If the user says a number in ANY language (like "એક", "one", "दो"), output ONLY the digit (e.g., "1", "2"). 
-     - CRITICAL: If the user says a system command like "start", "menu", "restart", or their regional equivalents (e.g., "શરૂઆત", "મેનુ"), output EXACTLY the word "START".
-  Return STRICT JSON: {"englishTranslation": "..."}`;
-
-  parts.push({ text: prompt });
-
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.0 },
-        contents: [{ role: 'user', parts }]
-      })
-    });
-    const data = await response.json();
-    const jsonStr = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-    const parsed = JSON.parse(jsonStr);
-    
-    return { text: parsed.englishTranslation || bodyRaw || '' };
-  } catch (e) {
-    return { text: bodyRaw || '' };
-  }
-}
-
-// --- NEW: Outgoing Translation ---
-async function translateForUser(text, targetLanguage) {
-  if (!targetLanguage || targetLanguage.toLowerCase() === 'english') return text;
-  
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-  const prompt = `Translate the following system message to ${targetLanguage}.
-  Keep all formatting, newlines, and list numbers EXACTLY the same. Do not add conversational filler.
-  Message:\n${text}`;
-
-  try {
-    const response = await fetch(endpoint, {
-       method: 'POST',
-       headers: { 'Content-Type': 'application/json' },
-       body: JSON.stringify({
-         generationConfig: { temperature: 0.1 },
-         contents: [{ role: 'user', parts: [{ text: prompt }] }]
-       })
-    });
-    const data = await response.json();
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || text;
-  } catch (e) {
-    return text;
-  }
 }
 
 function buildDailySlots(startHour, endHour, durationMinutes, bookedTimes) {
@@ -436,60 +411,32 @@ function appendMessage(conversation, role, content) {
   touchConversation(conversation);
 }
 
-async function sendAssistant(conversation, res, message, traceId = null, skipTranslation = false) {
+async function sendAssistant(conversation, res, message, traceId = null) {
   const effectiveTraceId = traceId || res?.locals?.traceId || null;
+  
+  // Translate the message based on user preference
+  const targetLang = conversation?.collectedData?.userLanguage || 'en';
+  
+  // Don't translate the initial language selection menu
+  let finalMessage = message;
+  if (conversation.step !== 'choose_language') {
+    finalMessage = await translateText(message, targetLang);
+  }
+
   logEvent('info', 'assistant_reply', {
     traceId: effectiveTraceId,
     conversationId: String(conversation._id || ''),
     sender: maskPhone(conversation.senderId),
     step: conversation.step,
-    status: conversation.status,
-    textPreview: String(message || '').slice(0, 120)
+    targetLang,
+    textPreview: String(finalMessage || '').slice(0, 120)
   });
 
-  // --- NEW: Translate output to the user's detected language ---
-  const targetLang = conversation.collectedData?.language || 'English';
-  let finalMessage = message;
-  if (!skipTranslation && targetLang !== 'English') {
-      finalMessage = await translateForUser(message, targetLang);
-  }
-
-  // Twilio expects a quick webhook response; send first, then persist in background.
   const xml = twimlMessage(finalMessage);
   res.type('text/xml').send(xml);
 
-  // Update this to save finalMessage instead of message so history matches
   appendMessage(conversation, 'assistant', finalMessage);
-
-  logEvent('info', 'twiml_response_sent', {
-    traceId: effectiveTraceId,
-    conversationId: String(conversation._id || ''),
-    sender: maskPhone(conversation.senderId),
-    bytes: Buffer.byteLength(xml)
-  });
-
-  appendMessage(conversation, 'assistant', message);
-  conversation
-    .save()
-    .then(() => {
-      logEvent('info', 'conversation_saved', {
-        traceId: effectiveTraceId,
-        conversationId: String(conversation._id || ''),
-        sender: maskPhone(conversation.senderId),
-        step: conversation.step,
-        status: conversation.status,
-        messageCount: (conversation.messages || []).length
-      });
-    })
-    .catch((saveError) => {
-      logEvent('error', 'conversation_save_failed', {
-        traceId: effectiveTraceId,
-        conversationId: String(conversation._id || ''),
-        sender: maskPhone(conversation.senderId),
-        message: saveError?.message || 'unknown error'
-      });
-    });
-
+  conversation.save().catch(e => console.error(e));
   return;
 }
 
@@ -524,18 +471,8 @@ router.post('/whatsapp-booking', async (req, res) => {
   const requestStartedAt = Date.now();
   const senderRaw = req.body?.From;
   const bodyRaw = req.body?.Body;
-  const mediaUrl = req.body?.NumMedia > 0 ? req.body?.MediaUrl0 : null;
-  const mimeType = req.body?.NumMedia > 0 ? req.body?.MediaContentType0 : null;
   const senderId = normalizePhone(senderRaw);
-
-  // --- NEW: Process Audio & Translate to English for internal logic ---
-  const { text: translatedUserMsg } = await traceStage(
-    'process_media_and_translate',
-    () => processIncomingMediaOrText(bodyRaw, mediaUrl, mimeType)
-  );
-
-  // From here on, your Node backend just interacts with the translated English text
-  const userMsg = translatedUserMsg.trim();
+  const userMsg = String(bodyRaw || '').trim();
   const command = normalizeCommand(userMsg);
 
   const longRunningTimer = setTimeout(() => {
@@ -636,36 +573,51 @@ router.post('/whatsapp-booking', async (req, res) => {
       status: conversation?.status || null
     });
 
-    // --- 1. INITIALIZATION: Ask for Language First ---
     if (!conversation || shouldRestart) {
-      await traceStage('expire_active_conversation', () => expireActiveConversation(senderId));
+      await traceStage('expire_active_conversation', () => expireActiveConversation(senderId), {
+        shouldRestart,
+        hadConversation: Boolean(conversation)
+      });
 
-      // Load hospitals now so they are ready for the next step
       const optionHospitals = await traceStage('load_hospital_options', () => loadHospitalOptions(senderId));
-
+      
       const isExistingPatient = Boolean(existingPatient?._id);
       conversation = new WhatsAppConversation({
         senderId,
         patientId: existingPatient?._id,
         status: 'active',
-        step: 'choose_language', // <--- Start them here!
-        collectedData: isExistingPatient ? { patientName: `${existingPatient.firstName} ${existingPatient.lastName}` } : {},
+        step: 'choose_language', // NEW: Always ask language first
+        collectedData: isExistingPatient
+          ? { patientName: `${existingPatient.firstName || ''} ${existingPatient.lastName || ''}`.trim() }
+          : {},
         options: { hospitals: optionHospitals },
         aiPendingQuestions: [],
         messages: []
       });
 
-      if (userMsg) appendMessage(conversation, 'user', userMsg);
-
-      // Send the hardcoded language menu and SKIP translation
+      // Present the Multilingual Menu
       return sendAssistant(
         conversation,
         res,
-        'Welcome to Jeeva!\nPlease select your preferred language / કૃપા કરીને તમારી ભાષા પસંદ કરો:\n1. English\n2. हिन्दी (Hindi)\n3. ગુજરાતી (Gujarati)',
-        traceId,
-        true // skipTranslation flag
+        "Welcome to Jeeva! / जीवा में आपका स्वागत है! / જીવામાં તમારું સ્વાગત છે!\n\nPlease select your language / कृपया अपनी भाषा चुनें / કૃપા કરીને તમારી ભાષા પસંદ કરો:\n1. English\n2. हिन्दी\n3. ગુજરાતી"
       );
     }
+    // --- NEW: VOICE NOTE HANDLING ---
+    if (req.body?.NumMedia > 0 && req.body?.MediaContentType0?.includes('audio')) {
+      const langMap = { 'en': 'en-US', 'hi': 'hi-IN', 'gu': 'gu-IN' };
+      const currentLang = conversation.collectedData?.userLanguage || 'en';
+      const speechCode = langMap[currentLang];
+
+      const transcribedText = await transcribeTwilioAudio(req.body.MediaUrl0, speechCode);
+      if (transcribedText) {
+         userMsg = transcribedText; // Override the text message with the transcribed audio
+         logEvent('info', 'audio_transcribed', { senderId, userMsg });
+      } else {
+         return sendAssistant(conversation, res, "Sorry, I couldn't clearly hear that audio. Could you please type it?");
+      }
+    }
+    // Update the command in case it was a voice note saying "Restart"
+    const command = normalizeCommand(userMsg);
 
     if (!userMsg) {
       return sendAssistant(conversation, res, 'Please send a number from the menu, or reply MENU to restart.');
@@ -673,21 +625,16 @@ router.post('/whatsapp-booking', async (req, res) => {
 
     appendMessage(conversation, 'user', userMsg);
     const step = conversation.step;
-
-    // --- 2. NEW STEP: Process Language Choice ---
     if (step === 'choose_language') {
-      const langChoices = ['English', 'Hindi', 'Gujarati'];
-      const index = parseChoice(userMsg, langChoices.length);
-      
-      if (index === null) {
-        return sendAssistant(conversation, res, 'Invalid choice. Please select:\n1. English\n2. हिन्दी\n3. ગુજરાતી', traceId, true);
+      const langChoices = { '1': 'en', '2': 'hi', '3': 'gu' };
+      if (!langChoices[userMsg]) {
+        return sendAssistant(conversation, res, "Invalid choice. Reply 1 for English, 2 for Hindi, or 3 for Gujarati.");
       }
+      
+      // Save their choice
+      setCollected(conversation, 'userLanguage', langChoices[userMsg]);
 
-      // Lock the language in!
-      const selectedLang = langChoices[index];
-      setCollected(conversation, 'language', selectedLang);
-
-      // Route them to the proper next step
+      // Move them to the correct next step
       const isExistingPatient = Boolean(conversation.patientId);
       if (isExistingPatient) {
         conversation.step = 'choose_hospital';
@@ -696,14 +643,25 @@ router.post('/whatsapp-booking', async (req, res) => {
         return sendAssistant(
           conversation,
           res,
-          `Welcome back.\nReply with number to choose hospital:\n${lines.join('\n')}\n\n(Reply START or MENU anytime to restart)`
+          `Welcome back ${conversation.collectedData.patientName}.\nReply with number to choose hospital:\n${lines.join('\n')}\n\n(Reply START or MENU anytime to restart)`
         );
       } else {
         conversation.step = 'collect_name';
-        return sendAssistant(conversation, res, 'Please reply with your full name to continue booking.');
+        return sendAssistant(
+          conversation,
+          res,
+          'Namaste! Welcome to Jeeva.\nPlease reply with your full name to continue booking.\n\n(Reply START or MENU anytime to restart)'
+        );
       }
     }
 
+    if (!userMsg) {
+      return sendAssistant(conversation, res, 'Please send a number from the menu, or reply MENU to restart.');
+    }
+
+    appendMessage(conversation, 'user', userMsg);
+
+    
     logEvent('info', 'processing_step', {
       sender: maskPhone(senderId),
       conversationId: String(conversation._id),
@@ -981,9 +939,10 @@ router.post('/whatsapp-booking', async (req, res) => {
             { patientId: String(conversation.patientId) }
           )
         : null;
+      const fullLangName = { 'en': 'English', 'hi': 'Hindi', 'gu': 'Gujarati' };
       const aiQuestions = await generateNextQuestions(
         conversation.messages,
-        patientProfile?.preferredLanguage || 'English'
+        fullLangName[conversation.collectedData.userLanguage] || 'English'
       );
       conversation.aiPendingQuestions = aiQuestions;
       conversation.markModified('aiPendingQuestions');
@@ -1174,6 +1133,5 @@ router.get('/whatsapp-booking/history/:senderId', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch WhatsApp history' });
   }
 });
-
 
 module.exports = router;

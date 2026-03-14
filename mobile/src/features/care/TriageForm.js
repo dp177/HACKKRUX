@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -50,6 +50,22 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
   const [vitals, setVitals] = useState({ hr: '', bp: '', temp: '', o2: '', rr: '' });
 
   const normalizedInputMode = useMemo(() => (String(inputMode).toLowerCase() === 'voice' ? 'voice' : 'text'), [inputMode]);
+  const [effectiveInputMode, setEffectiveInputMode] = useState(normalizedInputMode);
+
+  useEffect(() => {
+    setEffectiveInputMode(normalizedInputMode);
+  }, [normalizedInputMode]);
+
+  function fallbackToTextMode(reason) {
+    console.log('[TriageForm] fallback_to_text', {
+      debugSessionId,
+      reason: reason || 'unknown',
+      previousMode: effectiveInputMode
+    });
+    setEffectiveInputMode('text');
+    setStep('initial');
+    onError?.(reason || 'Voice input unavailable. Switched to Text Input.');
+  }
 
   function toggleComorbidity(c) {
     setComorbidities((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]));
@@ -60,7 +76,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
       setAskingNext(true);
       console.log('[TriageForm] ask_next_start', {
         debugSessionId,
-        inputMode: normalizedInputMode,
+        inputMode: effectiveInputMode,
         historyLength: Array.isArray(baseHistory) ? baseHistory.length : 0
       });
       const result = await triageChatNext(baseHistory);
@@ -68,21 +84,21 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
 
       console.log('[TriageForm] ask_next_response', {
         debugSessionId,
-        inputMode: normalizedInputMode,
+        inputMode: effectiveInputMode,
         questionCount: Array.isArray(result?.questions) ? result.questions.length : 0,
         nextQuestionPreview: typeof nextQuestion === 'string' ? nextQuestion.slice(0, 120) : null
       });
 
       if (!nextQuestion) {
         onError?.('No follow-up question returned by triage AI');
-        setStep(normalizedInputMode === 'voice' ? 'voice' : 'chat');
+        setStep(effectiveInputMode === 'voice' ? 'voice' : 'chat');
         return;
       }
 
       if (nextQuestion === TRIAGE_COMPLETE_TOKEN) {
         console.log('[TriageForm] triage_complete_token', {
           debugSessionId,
-          inputMode: normalizedInputMode,
+          inputMode: effectiveInputMode,
           historyLength: Array.isArray(baseHistory) ? baseHistory.length : 0
         });
         setStep('context');
@@ -97,15 +113,15 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
         return [...prev, { role: 'assistant', content: nextQuestion }];
       });
 
-      setStep(normalizedInputMode === 'voice' ? 'voice' : 'chat');
+      setStep(effectiveInputMode === 'voice' ? 'voice' : 'chat');
     } catch (error) {
       console.log('[TriageForm] ask_next_error', {
         debugSessionId,
-        inputMode: normalizedInputMode,
+        inputMode: effectiveInputMode,
         message: error?.message || 'unknown error'
       });
       onError?.(error?.message || 'Could not fetch AI questions');
-      setStep(normalizedInputMode === 'voice' ? 'voice' : 'initial');
+      setStep(effectiveInputMode === 'voice' ? 'voice' : 'initial');
     } finally {
       setAskingNext(false);
     }
@@ -121,7 +137,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
       debugSessionId,
       patientId,
       mode,
-      inputMode: normalizedInputMode,
+      inputMode: effectiveInputMode,
       departmentId: departmentId || null,
       hospitalId: hospitalId || null,
       availableDepartmentsCount: Array.isArray(availableDepartments) ? availableDepartments.length : 0
@@ -175,7 +191,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
       patient_id: patientId,
       department_id: departmentId || null,
       hospital_id: hospitalId || null,
-      input_mode: normalizedInputMode,
+      input_mode: effectiveInputMode,
       conversation_history: history,
       available_departments: availableDepartments || [],
       context: {
@@ -200,7 +216,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
         patientId,
         departmentId: payload.department_id,
         hospitalId: payload.hospital_id,
-        inputMode: normalizedInputMode,
+        inputMode: effectiveInputMode,
         historyLength: payload.conversation_history.length,
         hasVitals: Object.values(payload.vitals || {}).some((v) => String(v || '').trim() !== ''),
         comorbidityCount: payload.context?.comorbidities?.length || 0
@@ -236,11 +252,12 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
     );
   }
 
-  if (normalizedInputMode === 'voice' && (step === 'initial' || step === 'voice' || step === 'chat') && step !== 'context') {
+  if (effectiveInputMode === 'voice' && (step === 'initial' || step === 'voice' || step === 'chat') && step !== 'context') {
     return (
       <VoiceTriageAgent
         onComplete={handleVoiceHistoryComplete}
         onError={(message) => onError?.(message)}
+        onFallbackToText={() => fallbackToTextMode('Voice input unavailable. Switched to Text Input.')}
       />
     );
   }

@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Constants from 'expo-constants';
 import { triageChatNext } from '../api';
 import { colors, radii, spacing } from '../theme/tokens';
 
 const TRIAGE_COMPLETE_TOKEN = '[TRIAGE_COMPLETE]';
 
-export default function VoiceTriageAgent({ onComplete, onError }) {
+export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText }) {
   const [conversation, setConversation] = useState([]);
   const [subtitle, setSubtitle] = useState('Tap Start to begin voice triage.');
   const [listening, setListening] = useState(false);
@@ -26,6 +27,14 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
 
     async function setupVoiceModules() {
       try {
+        if (Constants.appOwnership === 'expo') {
+          console.log('[VoiceTriage] expo_go_detected', { sessionId: sessionIdRef.current });
+          setVoiceReady(false);
+          onError?.('Voice input is not supported in Expo Go. Switch to Text Input or run a development build.');
+          onFallbackToText?.();
+          return;
+        }
+
         const VoiceModule = await import('@react-native-voice/voice');
         const TtsModule = await import('react-native-tts');
 
@@ -82,6 +91,7 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
         });
         setVoiceReady(false);
         onError?.('Voice mode requires a development build with @react-native-voice/voice and react-native-tts installed.');
+        onFallbackToText?.();
       }
     }
 
@@ -177,6 +187,13 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
         sessionId: sessionIdRef.current,
         message: error?.message || 'unknown error'
       });
+
+      // If native bridge is missing, auto-fallback to text mode.
+      if ((error?.message || '').toLowerCase().includes('startspeech')) {
+        setVoiceReady(false);
+        onFallbackToText?.();
+      }
+
       setListening(false);
       onError?.(error?.message || 'Failed to start listening');
     }
@@ -330,6 +347,11 @@ export default function VoiceTriageAgent({ onComplete, onError }) {
       </TouchableOpacity>
 
       {!voiceReady ? <Text style={styles.warn}>Voice mode unavailable in this build. Use Text Input or run a development build.</Text> : null}
+      {!voiceReady ? (
+        <TouchableOpacity style={[styles.button, styles.textFallbackButton]} onPress={() => onFallbackToText?.()}>
+          <Text style={styles.buttonText}>Switch To Text Input</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -428,6 +450,10 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontFamily: 'Inter_600SemiBold',
     fontSize: 15
+  },
+  textFallbackButton: {
+    marginTop: spacing.sm,
+    backgroundColor: colors.primaryDark
   },
   warn: {
     marginTop: spacing.sm,

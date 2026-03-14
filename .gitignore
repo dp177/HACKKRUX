@@ -82,3 +82,5 @@ htmlcov/
 *.tmp
 *.temp
 .cache/
+
+google-credentials.json
