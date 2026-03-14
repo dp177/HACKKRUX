@@ -363,30 +363,11 @@ export default function HomeScreen() {
       return;
     }
 
-    const isExpoGo = Constants.appOwnership === 'expo';
-
-    if (isExpoGo) {
-      console.log('[HomeFlow] voice_mode_blocked_expo_go', { departmentId: department.id });
-      Alert.alert(
-        'Voice Needs Dev Build',
-        'Voice input is not supported in Expo Go. Continuing with Text Input.',
-        [
-          {
-            text: 'Continue',
-            onPress: () => {
-              setTriageInputMode('text');
-              pushRoute('triage');
-            }
-          }
-        ],
-        { cancelable: true }
-      );
-      return;
-    }
-
     Alert.alert(
       'Choose Input Mode',
-      'How would you like to answer triage questions?',
+      Constants.appOwnership === 'expo'
+        ? 'Voice works in Expo Go with record-and-transcribe mode. Choose your input method.'
+        : 'How would you like to answer triage questions?',
       [
         {
           text: 'Voice Input',

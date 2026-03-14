@@ -477,6 +477,62 @@ export async function triageChatNext(conversationHistory) {
 }
 
 /**
+ * Upload recorded audio and receive a transcript from backend.
+ * Used for Expo Go voice mode where native speech modules are unavailable.
+ */
+export async function triageTranscribeAudio({ fileUri, token, languageCode = 'en-US', mimeType = 'audio/m4a' }) {
+  const traceId = `mtranscribe_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const url = `${API_BASE_URL}/v1/triage/transcribe`;
+
+  console.log('[MobileAPI] triage_transcribe_start', {
+    traceId,
+    url,
+    hasToken: Boolean(token),
+    languageCode,
+    fileUri: fileUri ? String(fileUri).slice(0, 80) : null
+  });
+
+  const formData = new FormData();
+  formData.append('language_code', languageCode);
+  formData.append('file', {
+    uri: fileUri,
+    name: `voice_${Date.now()}.m4a`,
+    type: mimeType
+  });
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'x-trace-id': traceId
+    },
+    body: formData
+  });
+
+  let data = null;
+  try { data = await response.json(); } catch { data = null; }
+
+  if (!response.ok) {
+    console.log('[MobileAPI] triage_transcribe_error', {
+      traceId,
+      url,
+      status: response.status,
+      message: data?.error || `Request failed: ${response.status}`,
+      details: data?.details || null
+    });
+    throw new Error(data?.error || `Request failed: ${response.status}`);
+  }
+
+  console.log('[MobileAPI] triage_transcribe_success', {
+    traceId,
+    transcriptLength: String(data?.transcript || '').length,
+    confidence: data?.confidence ?? null
+  });
+
+  return data;
+}
+
+/**
  * Calls the HuggingFace multi-agent triage AI directly.
  * POST /api/v1/analyze-triage  (multipart/form-data)
  *

@@ -6,6 +6,7 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
+const speech = require('@google-cloud/speech');
 const multer = require('multer');
 const { TriageRecord, Patient, Doctor, Department, Queue } = require('../models');
 const { authenticateAny, authenticateDoctor, authenticatePatient } = require('../middleware/auth');
@@ -19,6 +20,7 @@ const {
 
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || TRIAGE_AI_URL;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const speechClient = new speech.SpeechClient();
 
 function parseMaybeJson(value, fallback = null) {
   if (value === undefined || value === null) return fallback;
@@ -139,6 +141,19 @@ function inferChiefComplaint(providedValue, context, conversationHistory) {
   return normalizeOptionalString(firstUserMessage?.content);
 }
 
+function resolveSpeechEncoding(file = {}) {
+  const mime = String(file?.mimetype || '').toLowerCase();
+  const name = String(file?.originalname || '').toLowerCase();
+
+  if (mime.includes('wav') || name.endsWith('.wav')) return 'LINEAR16';
+  if (mime.includes('webm') || name.endsWith('.webm')) return 'WEBM_OPUS';
+  if (mime.includes('ogg') || name.endsWith('.ogg') || name.endsWith('.opus')) return 'OGG_OPUS';
+  if (mime.includes('mp3') || name.endsWith('.mp3')) return 'MP3';
+  if (mime.includes('mp4') || mime.includes('m4a') || name.endsWith('.m4a') || name.endsWith('.mp4')) return 'MP4';
+
+  return null;
+}
+
 function riskToPriority(urgencyLevel, riskScore) {
   const urgency = String(urgencyLevel || '').toUpperCase();
   if (urgency === 'CRITICAL') return 'CRITICAL';
@@ -256,6 +271,78 @@ router.post('/chat-next', authenticateAny, async (req, res) => {
     return res.status(500).json({
       error: 'Failed to fetch next triage questions',
       details: error.response?.data || error.message
+    });
+  }
+});
+
+// Audio transcription endpoint for Expo Go voice mode (record + upload).
+router.post('/transcribe', authenticateAny, upload.single('file'), async (req, res) => {
+  const traceId = req.headers['x-trace-id'] || buildTraceId('transcribe');
+  try {
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'audio file is required' });
+    }
+
+    const languageCode = normalizeOptionalString(req.body?.language_code) || 'en-US';
+    const encoding = resolveSpeechEncoding(req.file);
+
+    console.log('[TriageTranscribe] start', {
+      traceId,
+      role: req.role,
+      resolvedUserId: req.userId || null,
+      languageCode,
+      encoding,
+      fileName: req.file.originalname || null,
+      mimeType: req.file.mimetype || null,
+      bytes: req.file.buffer.length
+    });
+
+    const request = {
+      audio: {
+        content: req.file.buffer.toString('base64')
+      },
+      config: {
+        languageCode,
+        model: 'latest_short',
+        enableAutomaticPunctuation: true,
+        ...(encoding ? { encoding } : {})
+      }
+    };
+
+    const [response] = await speechClient.recognize(request);
+    const alternatives = response?.results?.flatMap((item) => item?.alternatives || []) || [];
+    const best = alternatives[0] || null;
+    const transcript = normalizeOptionalString(best?.transcript) || '';
+
+    console.log('[TriageTranscribe] success', {
+      traceId,
+      transcriptLength: transcript.length,
+      confidence: Number.isFinite(best?.confidence) ? best.confidence : null
+    });
+
+    if (!transcript) {
+      return res.status(422).json({
+        traceId,
+        error: 'Could not detect clear speech from the uploaded audio'
+      });
+    }
+
+    return res.json({
+      traceId,
+      transcript,
+      confidence: Number.isFinite(best?.confidence) ? best.confidence : null,
+      languageCode
+    });
+  } catch (error) {
+    console.error('[TriageTranscribe] failed', {
+      traceId,
+      message: error?.message || 'unknown error'
+    });
+
+    return res.status(500).json({
+      traceId,
+      error: 'Failed to transcribe audio',
+      details: error?.message || 'unknown error'
     });
   }
 });
