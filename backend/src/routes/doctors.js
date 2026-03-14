@@ -148,7 +148,7 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
         await recalculateDepartmentQueue(doctor.departmentId);
         const waiting = await Queue.find({ departmentId: doctor.departmentId, status: 'WAITING' })
           .populate('patientId', 'firstName lastName')
-          .populate('triageRecordId', 'chiefComplaint triageNotes redFlags symptomCategory recommendedSpecialty')
+          .populate('triageRecordId', 'chiefComplaint triageNotes historicalSummary redFlags symptomCategory recommendedSpecialty extractedSymptoms extractedComorbidities onsetType aiSeverity aiAnalysis analyzeOutput')
           .sort({ queuePosition: 1 });
 
         const avgWait = waiting.length
@@ -156,33 +156,61 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
           : 0;
 
         queueData = {
-          queue: waiting.map((row) => ({
-            queue_entry_id: row.id,
-            patient_id: row.patientId?._id || row.patientId,
-            patient_name: row.patientId ? `${row.patientId.firstName} ${row.patientId.lastName}` : 'Patient',
-            chief_complaint: row.triageRecordId?.chiefComplaint || 'General consultation',
-            department: row.departmentName || row.triageRecordId?.recommendedSpecialty || null,
-            explainability_summary: row.triageRecordId?.triageNotes || null,
-            historical_summary: null,
-            priority_level: row.priorityLevel,
-            urgency_level: row.urgencyLevel,
-            total_risk_score: row.riskScore,
-            risk_score: row.riskScore,
-            wait_minutes: row.estimatedWaitMinutes,
-            estimated_wait_minutes: row.estimatedWaitMinutes,
-            waited_minutes: row.waitTimeMinutes,
-            queue_position: row.queuePosition,
-            ai_analysis: {
-              chief_complaint: row.triageRecordId?.chiefComplaint || 'General consultation',
-              extracted_symptoms: row.triageRecordId?.symptomCategory ? [row.triageRecordId.symptomCategory] : [],
-              detected_red_flags: Array.isArray(row.triageRecordId?.redFlags) ? row.triageRecordId.redFlags : [],
-              severity: row.priorityLevel,
-              symptom_category: row.triageRecordId?.symptomCategory || null,
-              onset_type: null,
-              department: row.departmentName || row.triageRecordId?.recommendedSpecialty || null,
-              extracted_comorbidities: []
-            }
-          })),
+          queue: waiting.map((row) => {
+            const rawOutput = row.triageRecordId?.analyzeOutput && typeof row.triageRecordId.analyzeOutput === 'object'
+              ? row.triageRecordId.analyzeOutput
+              : null;
+
+            const fallbackAi = {
+              ...(row.triageRecordId?.aiAnalysis || {}),
+              chief_complaint: row.triageRecordId?.chiefComplaint || row.triageRecordId?.aiAnalysis?.chief_complaint || 'General consultation',
+              extracted_symptoms: (() => {
+                const direct = Array.isArray(row.triageRecordId?.extractedSymptoms)
+                  ? row.triageRecordId.extractedSymptoms
+                  : (Array.isArray(row.triageRecordId?.aiAnalysis?.extracted_symptoms) ? row.triageRecordId.aiAnalysis.extracted_symptoms : []);
+
+                if (direct.length) return direct;
+
+                const fallback = [
+                  row.triageRecordId?.symptomCategory,
+                  row.triageRecordId?.chiefComplaint
+                ].filter((entry) => typeof entry === 'string' && entry.trim().length);
+
+                return fallback;
+              })(),
+              detected_red_flags: Array.isArray(row.triageRecordId?.redFlags)
+                ? row.triageRecordId.redFlags
+                : (Array.isArray(row.triageRecordId?.aiAnalysis?.detected_red_flags) ? row.triageRecordId.aiAnalysis.detected_red_flags : []),
+              severity: row.triageRecordId?.aiSeverity || row.priorityLevel,
+              symptom_category: row.triageRecordId?.symptomCategory || row.triageRecordId?.aiAnalysis?.symptom_category || null,
+              onset_type: row.triageRecordId?.onsetType || row.triageRecordId?.aiAnalysis?.onset_type || null,
+              department: row.departmentName || row.triageRecordId?.recommendedSpecialty || row.triageRecordId?.aiAnalysis?.department || null,
+              extracted_comorbidities: Array.isArray(row.triageRecordId?.extractedComorbidities)
+                ? row.triageRecordId.extractedComorbidities
+                : (Array.isArray(row.triageRecordId?.aiAnalysis?.extracted_comorbidities) ? row.triageRecordId.aiAnalysis.extracted_comorbidities : [])
+            };
+
+            return {
+              queue_entry_id: row.id,
+              patient_id: row.patientId?._id || row.patientId,
+              analysis_patient_id: rawOutput?.patient_id || null,
+              patient_name: row.patientId ? `${row.patientId.firstName} ${row.patientId.lastName}` : 'Patient',
+              chief_complaint: rawOutput?.ai_analysis?.chief_complaint || row.triageRecordId?.chiefComplaint || 'General consultation',
+              department: rawOutput?.department || row.departmentName || row.triageRecordId?.recommendedSpecialty || null,
+              explainability_summary: rawOutput?.explainability_summary ?? row.triageRecordId?.triageNotes ?? null,
+              historical_summary: rawOutput?.historical_summary ?? row.triageRecordId?.historicalSummary ?? null,
+              priority_level: row.priorityLevel,
+              urgency_level: rawOutput?.urgency_level || row.urgencyLevel,
+              total_risk_score: rawOutput?.risk_score ?? row.riskScore,
+              risk_score: rawOutput?.risk_score ?? row.riskScore,
+              wait_minutes: row.estimatedWaitMinutes,
+              estimated_wait_minutes: row.estimatedWaitMinutes,
+              waited_minutes: row.waitTimeMinutes,
+              queue_position: row.queuePosition,
+              ai_analysis: rawOutput?.ai_analysis || fallbackAi,
+              analysis_output: rawOutput
+            };
+          }),
           statistics: {
             waiting_count: waiting.length,
             avg_wait_minutes: avgWait
@@ -272,13 +300,8 @@ router.get('/:doctorId/patient-preview/:patientId', authenticateDoctor, async (r
   try {
     const { patientId } = req.params;
     
-    // Get patient with comprehensive data
-    const patient = await Patient.findById(patientId)
-      .populate({
-        path: 'visits',
-        options: { limit: 5, sort: { visitDate: -1 } },
-        populate: { path: 'doctorId' }
-      });
+    // Get patient core profile
+    const patient = await Patient.findById(patientId);
     
     // Get additional data separately
     const vitalSigns = await VitalSignRecord.find({ patientId })
@@ -288,15 +311,84 @@ router.get('/:doctorId/patient-preview/:patientId', authenticateDoctor, async (r
     const triageRecords = await TriageRecord.find({ patientId })
       .sort({ createdAt: -1 })
       .limit(1);
+
+    const recentVisits = await Visit.find({ patientId })
+      .sort({ visitDate: -1, createdAt: -1 })
+      .limit(5)
+      .populate('doctorId', 'firstName lastName');
     
     if (!patient) {
       return res.status(404).json({ error: 'Patient not found' });
     }
     
     const age = Math.floor((new Date() - new Date(patient.dateOfBirth)) / 31557600000);
-    const lastVisit = patient.visits?.[0];
+    const lastVisit = recentVisits?.[0];
     const latestTriage = triageRecords[0];
     const latestVitals = vitalSigns[0];
+
+    if (latestTriage) {
+      const chronicFromProfile = (patient.chronicConditions || [])
+        .map((item) => item?.condition || item?.name || '')
+        .filter((entry) => typeof entry === 'string' && entry.trim().length)
+        .map((entry) => entry.trim());
+
+      const extractedSymptoms = Array.isArray(latestTriage.extractedSymptoms) && latestTriage.extractedSymptoms.length
+        ? latestTriage.extractedSymptoms
+        : [latestTriage.symptomCategory, latestTriage.chiefComplaint]
+          .filter((entry) => typeof entry === 'string' && entry.trim().length)
+          .map((entry) => entry.trim());
+
+      const extractedComorbidities = Array.isArray(latestTriage.extractedComorbidities) && latestTriage.extractedComorbidities.length
+        ? latestTriage.extractedComorbidities
+        : chronicFromProfile;
+
+      const historicalSummary = latestTriage.historicalSummary
+        || (extractedComorbidities.length ? `Known comorbidities: ${extractedComorbidities.join(', ')}` : null);
+
+      const aiAnalysis = {
+        ...(latestTriage.aiAnalysis || {}),
+        chief_complaint: latestTriage.chiefComplaint || latestTriage.aiAnalysis?.chief_complaint || null,
+        extracted_symptoms: extractedSymptoms,
+        detected_red_flags: Array.isArray(latestTriage.redFlags) ? latestTriage.redFlags : [],
+        severity: latestTriage.aiSeverity || latestTriage.priorityLevel || null,
+        symptom_category: latestTriage.symptomCategory || latestTriage.aiAnalysis?.symptom_category || null,
+        onset_type: latestTriage.onsetType || latestTriage.aiAnalysis?.onset_type || null,
+        department: latestTriage.recommendedSpecialty || latestTriage.aiAnalysis?.department || null,
+        extracted_comorbidities: extractedComorbidities
+      };
+
+      const analyzeOutput = latestTriage.analyzeOutput && typeof latestTriage.analyzeOutput === 'object'
+        ? latestTriage.analyzeOutput
+        : null;
+
+      const needsBackfill =
+        !Array.isArray(latestTriage.extractedSymptoms) || !latestTriage.extractedSymptoms.length
+        || !Array.isArray(latestTriage.extractedComorbidities) || !latestTriage.extractedComorbidities.length
+        || !latestTriage.historicalSummary
+        || !latestTriage.aiAnalysis
+        || !latestTriage.analyzeOutput;
+
+      if (needsBackfill) {
+        const patch = {
+          extractedSymptoms,
+          extractedComorbidities,
+          historicalSummary,
+          aiAnalysis,
+          analyzeOutput: analyzeOutput || {
+            patient_id: String(patient._id || patient.id || ''),
+            risk_score: latestTriage.totalRiskScore ?? null,
+            urgency_level: latestTriage.priorityLevel ?? null,
+            department: latestTriage.recommendedSpecialty ?? null,
+            explainability_summary: latestTriage.triageNotes ?? null,
+            historical_summary: historicalSummary ?? null,
+            ai_analysis: latestTriage.aiAnalysis || aiAnalysis
+          }
+        };
+
+        await TriageRecord.updateOne({ _id: latestTriage._id }, { $set: patch });
+        Object.assign(latestTriage, patch);
+      }
+    }
     
     // Build comprehensive preview
     const preview = {
@@ -348,7 +440,27 @@ router.get('/:doctorId/patient-preview/:patientId', authenticateDoctor, async (r
         symptomCategory: latestTriage.symptomCategory,
         redFlags: latestTriage.redFlags || [],
         vitalSigns: latestTriage.vitalSigns,
-        triageNotes: latestTriage.triageNotes
+        triageNotes: latestTriage.triageNotes,
+        explainabilitySummary: latestTriage.triageNotes || null,
+        historicalSummary: latestTriage.historicalSummary || null,
+        aiAnalysis: latestTriage.analyzeOutput?.ai_analysis || {
+          ...(latestTriage.aiAnalysis || {}),
+          chief_complaint: latestTriage.chiefComplaint || latestTriage.aiAnalysis?.chief_complaint || null,
+          extracted_symptoms: Array.isArray(latestTriage.extractedSymptoms)
+            ? latestTriage.extractedSymptoms
+            : (Array.isArray(latestTriage.aiAnalysis?.extracted_symptoms) ? latestTriage.aiAnalysis.extracted_symptoms : []),
+          detected_red_flags: Array.isArray(latestTriage.redFlags)
+            ? latestTriage.redFlags
+            : (Array.isArray(latestTriage.aiAnalysis?.detected_red_flags) ? latestTriage.aiAnalysis.detected_red_flags : []),
+          severity: latestTriage.aiSeverity || latestTriage.priorityLevel || null,
+          symptom_category: latestTriage.symptomCategory || latestTriage.aiAnalysis?.symptom_category || null,
+          onset_type: latestTriage.onsetType || latestTriage.aiAnalysis?.onset_type || null,
+          department: latestTriage.recommendedSpecialty || latestTriage.aiAnalysis?.department || null,
+          extracted_comorbidities: Array.isArray(latestTriage.extractedComorbidities)
+            ? latestTriage.extractedComorbidities
+            : (Array.isArray(latestTriage.aiAnalysis?.extracted_comorbidities) ? latestTriage.aiAnalysis.extracted_comorbidities : [])
+        },
+        analysisOutput: latestTriage.analyzeOutput || null
       } : null,
       
       // LATEST VITALS
@@ -365,7 +477,7 @@ router.get('/:doctorId/patient-preview/:patientId', authenticateDoctor, async (r
       } : null,
       
       // RECENT VISIT HISTORY (Last 5 visits)
-      recentVisits: (patient.visits || []).map(visit => ({
+      recentVisits: (recentVisits || []).map(visit => ({
         date: visit.visitDate,
         doctor: visit.doctorId ? `Dr. ${visit.doctorId.firstName} ${visit.doctorId.lastName}` : 'Unknown',
         chiefComplaint: visit.chiefComplaint,
@@ -1040,6 +1152,174 @@ router.get('/:doctorId/slots', async (req, res) => {
   } catch (error) {
     console.error('Error fetching doctor slots:', error);
     return res.status(400).json({ error: error.message || 'Failed to fetch doctor slots' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// DOCTOR PATIENT HISTORY (visited/treated patients)
+// ═══════════════════════════════════════════════════════════════
+
+router.get('/:doctorId/patients/history', authenticateDoctor, async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const limit = Math.max(1, Math.min(Number(req.query.limit || 100), 500));
+
+    if (!ensureDoctorAccess(req, doctorId)) {
+      return res.status(403).json({ error: 'You can only access your own patient history' });
+    }
+
+    const [visits, appointments, queueHistory] = await Promise.all([
+      Visit.find({ doctorId })
+        .populate('patientId', 'firstName lastName phone dateOfBirth gender bloodType')
+        .sort({ visitDate: -1, createdAt: -1 })
+        .limit(limit),
+      Appointment.find({
+        doctorId,
+        status: { $in: ['checked-in', 'in-progress', 'completed'] }
+      })
+        .populate('patientId', 'firstName lastName phone dateOfBirth gender bloodType')
+        .sort({ checkOutTime: -1, checkInTime: -1, scheduledDate: -1, createdAt: -1 })
+        .limit(limit),
+      Queue.find({
+        calledByDoctorId: doctorId,
+        status: { $in: ['IN_CONSULTATION', 'COMPLETED'] }
+      })
+        .populate('patientId', 'firstName lastName phone dateOfBirth gender bloodType')
+        .populate('triageRecordId', 'chiefComplaint')
+        .sort({ completedAt: -1, calledAt: -1, createdAt: -1 })
+        .limit(limit)
+    ]);
+
+    const normalizeName = (patient) => {
+      if (!patient) return 'Patient';
+      const first = String(patient.firstName || '').trim();
+      const last = String(patient.lastName || '').trim();
+      const full = `${first} ${last}`.trim();
+      return full || 'Patient';
+    };
+
+    const computeAge = (dob) => {
+      if (!dob) return null;
+      const age = Math.floor((Date.now() - new Date(dob).getTime()) / 31557600000);
+      return Number.isFinite(age) ? age : null;
+    };
+
+    const combinedVisits = [];
+
+    for (const visit of visits) {
+      const patient = visit.patientId;
+      combinedVisits.push({
+        id: `visit:${String(visit._id)}`,
+        source: 'visit',
+        patientId: patient?._id ? String(patient._id) : String(visit.patientId || ''),
+        patientName: normalizeName(patient),
+        patient,
+        visitDate: visit.visitDate || visit.createdAt,
+        chiefComplaint: visit.chiefComplaint || null,
+        diagnosis: visit.diagnosis || null,
+        treatment: visit.treatment || null,
+        doctorNotes: visit.doctorNotes || null,
+        followUpNeeded: Boolean(visit.followUpNeeded),
+        followUpDate: visit.followUpDate || null,
+        status: visit.status || null
+      });
+    }
+
+    for (const appointment of appointments) {
+      const patient = appointment.patientId;
+      combinedVisits.push({
+        id: `appointment:${String(appointment._id)}`,
+        source: 'appointment',
+        patientId: patient?._id ? String(patient._id) : String(appointment.patientId || ''),
+        patientName: normalizeName(patient),
+        patient,
+        visitDate: appointment.checkOutTime || appointment.checkInTime || appointment.scheduledDate || appointment.createdAt,
+        chiefComplaint: appointment.chiefComplaint || null,
+        diagnosis: appointment.status === 'completed' ? 'Completed appointment' : 'Ongoing appointment',
+        treatment: appointment.appointmentType || null,
+        doctorNotes: appointment.patientNotes || null,
+        followUpNeeded: false,
+        followUpDate: null,
+        status: appointment.status || null
+      });
+    }
+
+    for (const queue of queueHistory) {
+      const patient = queue.patientId;
+      combinedVisits.push({
+        id: `queue:${String(queue._id)}`,
+        source: 'queue',
+        patientId: patient?._id ? String(patient._id) : String(queue.patientId || ''),
+        patientName: normalizeName(patient),
+        patient,
+        visitDate: queue.completedAt || queue.calledAt || queue.startedAt || queue.createdAt,
+        chiefComplaint: queue.triageRecordId?.chiefComplaint || null,
+        diagnosis: queue.status === 'COMPLETED' ? 'Consultation completed' : 'In consultation',
+        treatment: queue.departmentName || null,
+        doctorNotes: null,
+        followUpNeeded: false,
+        followUpDate: null,
+        status: queue.status || null
+      });
+    }
+
+    const dedupedVisits = combinedVisits
+      .filter((item) => item.patientId)
+      .sort((a, b) => new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime())
+      .slice(0, limit);
+
+    const treatedByPatient = new Map();
+    for (const item of dedupedVisits) {
+      const existing = treatedByPatient.get(item.patientId);
+      if (!existing) {
+        treatedByPatient.set(item.patientId, {
+          patientId: item.patientId,
+          name: item.patientName,
+          phone: item.patient?.phone || null,
+          gender: item.patient?.gender || null,
+          bloodType: item.patient?.bloodType || null,
+          age: computeAge(item.patient?.dateOfBirth),
+          visitsCount: 1,
+          lastVisitDate: item.visitDate,
+          lastDiagnosis: item.diagnosis || null,
+          lastChiefComplaint: item.chiefComplaint || null
+        });
+      } else {
+        existing.visitsCount += 1;
+      }
+    }
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const treatedToday = dedupedVisits.filter((item) => new Date(item.visitDate) >= startOfToday).length;
+
+    return res.json({
+      doctorId,
+      totals: {
+        totalVisits: dedupedVisits.length,
+        totalPatientsTreated: treatedByPatient.size,
+        treatedToday
+      },
+      treatedPatients: Array.from(treatedByPatient.values())
+        .sort((a, b) => new Date(b.lastVisitDate).getTime() - new Date(a.lastVisitDate).getTime()),
+      visits: dedupedVisits.map((item) => ({
+        id: item.id,
+        source: item.source,
+        patientId: item.patientId,
+        patientName: item.patientName,
+        visitDate: item.visitDate,
+        chiefComplaint: item.chiefComplaint || null,
+        diagnosis: item.diagnosis || null,
+        treatment: item.treatment || null,
+        doctorNotes: item.doctorNotes || null,
+        followUpNeeded: Boolean(item.followUpNeeded),
+        followUpDate: item.followUpDate || null,
+        status: item.status || null
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching doctor patient history:', error);
+    return res.status(500).json({ error: 'Failed to fetch patient history' });
   }
 });
 

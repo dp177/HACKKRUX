@@ -49,6 +49,66 @@ function riskToPriority(urgencyLevel, riskScore) {
   return 'ROUTINE';
 }
 
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+
+  const out = [];
+  for (const item of value) {
+    if (typeof item === 'string' && item.trim()) {
+      out.push(item.trim());
+      continue;
+    }
+
+    if (item && typeof item === 'object') {
+      const candidate = item.name || item.condition || item.symptom || item.title || item.label || item.value;
+      if (typeof candidate === 'string' && candidate.trim()) {
+        out.push(candidate.trim());
+      }
+    }
+  }
+
+  return Array.from(new Set(out));
+}
+
+function inferOnsetType(context, conversationHistory) {
+  const aiContextOnset = context?.onset_type;
+  if (typeof aiContextOnset === 'string' && aiContextOnset.trim()) {
+    return aiContextOnset.trim();
+  }
+
+  const history = Array.isArray(conversationHistory) ? conversationHistory : [];
+  const durationAnswer = history
+    .filter((msg) => msg?.role === 'user' && typeof msg?.content === 'string')
+    .map((msg) => msg.content.toLowerCase())
+    .find((text) => /hour|today|sudden|suddenly|just now|few min|minutes/.test(text))
+    || history
+      .filter((msg) => msg?.role === 'user' && typeof msg?.content === 'string')
+      .map((msg) => msg.content.toLowerCase())
+      .find((text) => /day|week|month|chronic|long|since/.test(text));
+
+  if (!durationAnswer) return null;
+  if (/hour|today|sudden|suddenly|just now|few min|minutes/.test(durationAnswer)) return 'sudden';
+  if (/day|week|month|chronic|long|since/.test(durationAnswer)) return 'gradual';
+  return null;
+}
+
+function buildFallbackHistoricalSummary(context, extractedComorbidities) {
+  const parts = [];
+  if (Array.isArray(extractedComorbidities) && extractedComorbidities.length) {
+    parts.push(`Known comorbidities: ${extractedComorbidities.join(', ')}`);
+  }
+
+  if (context?.recent_trauma_or_surgery === true) {
+    parts.push('Recent trauma or surgery reported.');
+  }
+
+  if (typeof context?.age === 'number' && context.age > 0) {
+    parts.push(`Reported age: ${context.age}`);
+  }
+
+  return parts.length ? parts.join(' ') : null;
+}
+
 async function resolveDepartmentId(departmentInput) {
   if (!departmentInput) return null;
 
@@ -130,19 +190,65 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       department: ai?.department || ai?.recommended_department || null
     });
 
-    const departmentName = ai.department || ai.recommended_department || null;
+    const aiAnalysis = ai?.ai_analysis && typeof ai.ai_analysis === 'object' ? ai.ai_analysis : {};
+    const rawAnalyzeOutput = {
+      patient_id: ai?.patient_id ?? payload.patient_id ?? null,
+      risk_score: ai?.risk_score ?? ai?.riskScore ?? null,
+      urgency_level: ai?.urgency_level ?? ai?.urgencyLevel ?? null,
+      department: ai?.department ?? ai?.recommended_department ?? aiAnalysis?.department ?? null,
+      explainability_summary: ai?.explainability_summary ?? ai?.summary ?? null,
+      historical_summary: ai?.historical_summary ?? null,
+      ai_analysis: ai?.ai_analysis && typeof ai.ai_analysis === 'object' ? ai.ai_analysis : null
+    };
+    const departmentName = ai.department || ai.recommended_department || aiAnalysis.department || null;
     const requestedDepartmentId = body.department_id || body.departmentId || null;
     const departmentId = await resolveDepartmentId(requestedDepartmentId || departmentName);
     const hospitalId = body.hospital_id || body.hospitalId || null;
 
     const riskScore = Number(ai.risk_score ?? ai.riskScore ?? 0);
     const priorityLevel = riskToPriority(ai.urgency_level || ai.urgencyLevel, riskScore);
+    const chiefComplaintResolved = aiAnalysis.chief_complaint || ai.chief_complaint || chiefComplaint;
+    const symptomCategoryResolved = aiAnalysis.symptom_category || ai.symptom_category || context?.symptom_category || null;
+    const redFlagsResolvedRaw = normalizeStringArray(aiAnalysis.detected_red_flags || ai.red_flags);
+    const extractedSymptomsRaw = normalizeStringArray(aiAnalysis.extracted_symptoms);
+    const extractedComorbiditiesRaw = normalizeStringArray(aiAnalysis.extracted_comorbidities);
+    const contextComorbidities = normalizeStringArray(context?.comorbidities);
+    const extractedComorbidities = extractedComorbiditiesRaw.length
+      ? extractedComorbiditiesRaw
+      : contextComorbidities;
+    const extractedSymptoms = extractedSymptomsRaw.length
+      ? extractedSymptomsRaw
+      : normalizeStringArray([
+          symptomCategoryResolved,
+          chiefComplaintResolved
+        ]);
+    const redFlagsResolved = redFlagsResolvedRaw.length
+      ? redFlagsResolvedRaw
+      : normalizeStringArray([
+          context?.breathing_difficulty === 'severe' ? 'Severe breathing difficulty' : null,
+          context?.recent_trauma_or_surgery ? 'Recent trauma or surgery' : null
+        ]);
+    const explainabilitySummary = ai.explainability_summary || ai.summary || null;
+    const historicalSummary = ai.historical_summary || buildFallbackHistoricalSummary(context, extractedComorbidities);
+    const onsetType = aiAnalysis.onset_type || inferOnsetType(context, conversationHistory);
+    const aiSeverity = aiAnalysis.severity || priorityLevel;
+
+    const normalizedAiAnalysis = {
+      chief_complaint: chiefComplaintResolved,
+      extracted_symptoms: extractedSymptoms,
+      detected_red_flags: redFlagsResolved,
+      severity: aiSeverity,
+      symptom_category: symptomCategoryResolved,
+      onset_type: onsetType,
+      department: departmentName,
+      extracted_comorbidities: extractedComorbidities
+    };
 
     const triageRecord = await TriageRecord.create({
       patientId,
       departmentId: departmentId || null,
-      chiefComplaint,
-      symptomCategory: ai.symptom_category || null,
+      chiefComplaint: chiefComplaintResolved,
+      symptomCategory: symptomCategoryResolved,
       criticalScore: null,
       symptomScore: null,
       contextScore: null,
@@ -151,10 +257,17 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       totalRiskScore: riskScore,
       priorityLevel,
       estimatedWaitMinutes: Number(ai.estimated_wait_minutes ?? ai.estimatedWaitMinutes ?? 0),
-      redFlags: Array.isArray(ai.red_flags) ? ai.red_flags : [],
+      redFlags: redFlagsResolved,
       vitalSigns: vitals || {},
       recommendedSpecialty: departmentName,
-      triageNotes: ai.explainability_summary || ai.summary || null,
+      triageNotes: explainabilitySummary,
+      historicalSummary,
+      extractedSymptoms,
+      extractedComorbidities,
+      onsetType,
+      aiSeverity,
+      aiAnalysis: rawAnalyzeOutput.ai_analysis || normalizedAiAnalysis,
+      analyzeOutput: rawAnalyzeOutput,
       queuePosition: null
     });
     console.log('[TriageAnalyze] triage_record_saved', { traceId, triageRecordId: triageRecord._id });
@@ -195,7 +308,10 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
         urgency_level: triageRecord.priorityLevel,
         department: triageRecord.recommendedSpecialty,
         explainability_summary: triageRecord.triageNotes,
-        red_flags: triageRecord.redFlags
+        historical_summary: triageRecord.historicalSummary,
+        red_flags: triageRecord.redFlags,
+        ai_analysis: triageRecord.aiAnalysis,
+        analyze_output: triageRecord.analyzeOutput
       },
       queue: {
         tokenNumber: queueEntry?.queuePosition || null,

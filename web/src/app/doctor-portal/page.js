@@ -13,6 +13,7 @@ import {
   deleteDoctorSlot,
   getDoctorDashboard,
   getDoctorBreaksForDate,
+  getDoctorPatientHistory,
   getDoctorProfile,
   getDoctorScheduleForDate,
   getDoctorSlotsForDate,
@@ -35,7 +36,7 @@ const NAV_ITEMS = [
 const PRIORITY_META = {
   critical: { label: 'Critical', color: 'bg-red-100 text-red-700 border-red-200' },
   high: { label: 'High', color: 'bg-orange-100 text-orange-700 border-orange-200' },
-  medium: { label: 'Medium', color: 'bg-yellow-100 text-yellow-700 border-yellow-200' },
+  medium: { label: 'Moderate', color: 'bg-yellow-100 text-yellow-700 border-yellow-200' },
   low: { label: 'Low', color: 'bg-emerald-100 text-emerald-700 border-emerald-200' }
 };
 
@@ -74,7 +75,7 @@ function queueRowFromRaw(item, index) {
     : String(rawPatientId || '');
 
   const score = Number(item.total_risk_score || item.totalRiskScore || item.riskScore || item.score || 0);
-  const priority = normalizePriority(item.priority_level || item.priorityLevel || item.priority || (score >= 85 ? 'critical' : score >= 65 ? 'high' : score >= 40 ? 'medium' : 'low'));
+  const priority = normalizePriority(item.urgency_level || item.urgencyLevel || item.priority_level || item.priorityLevel || item.priority || (score >= 85 ? 'critical' : score >= 65 ? 'high' : score >= 40 ? 'medium' : 'low'));
   return {
     id: patientId || item.id || `queue-${index}`,
     name: item.patient_name || item.patientName || item.name || `Patient ${index + 1}`,
@@ -86,8 +87,16 @@ function queueRowFromRaw(item, index) {
     waitedTime: `${item.waited_minutes ?? 0} min`,
     explainabilitySummary: item.explainability_summary || item.ai_analysis?.summary || '',
     historicalSummary: item.historical_summary || '',
-    aiAnalysis: item.ai_analysis || null
+    aiAnalysis: item.ai_analysis || null,
+    analysisOutput: item.analysis_output || null
   };
+}
+
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry) => typeof entry === 'string' && entry.trim().length)
+    .map((entry) => entry.trim());
 }
 
 function formatDateWithDay(date) {
@@ -145,6 +154,11 @@ export default function DoctorPortalPage() {
   const [notifications, setNotifications] = useState([]);
   const [appointmentNotes, setAppointmentNotes] = useState({});
   const [appointmentsState, setAppointmentsState] = useState({});
+  const [doctorHistory, setDoctorHistory] = useState({
+    totals: { totalVisits: 0, totalPatientsTreated: 0, treatedToday: 0 },
+    treatedPatients: [],
+    visits: []
+  });
 
   const [loading, setLoading] = useState(true);
 
@@ -299,13 +313,19 @@ export default function DoctorPortalPage() {
     if (!silent) setLoading(true);
 
     try {
-      const [dashboardData, profileData] = await Promise.all([
+      const [dashboardData, profileData, historyData] = await Promise.all([
         getDoctorDashboard(doctor.id, token),
-        getDoctorProfile(token)
+        getDoctorProfile(token),
+        getDoctorPatientHistory(doctor.id, token)
       ]);
 
       setDashboard(dashboardData);
       setProfile(profileData);
+      setDoctorHistory(historyData || {
+        totals: { totalVisits: 0, totalPatientsTreated: 0, treatedToday: 0 },
+        treatedPatients: [],
+        visits: []
+      });
 
       if (!silent) {
         toast.success('Doctor portal synced');
@@ -457,6 +477,22 @@ export default function DoctorPortalPage() {
   }
 
   function renderQueue() {
+    const selectedAi = selectedQueuePatient?.aiAnalysis || selectedPatientPreview?.todayTriage?.aiAnalysis || {};
+    const selectedRawAnalysis = selectedQueuePatient?.analysisOutput || selectedPatientPreview?.todayTriage?.analysisOutput || null;
+    const selectedSymptoms = normalizeStringList(selectedAi.extracted_symptoms);
+    const selectedRedFlags = normalizeStringList(selectedAi.detected_red_flags);
+    const aiComorbidities = normalizeStringList(selectedAi.extracted_comorbidities);
+    const profileComorbidities = normalizeStringList(
+      (selectedPatientPreview?.medicalProfile?.chronicConditions || []).map((item) => item?.condition || item?.name || '')
+    );
+    const selectedComorbidities = aiComorbidities.length
+      ? aiComorbidities
+      : profileComorbidities;
+    const selectedSeverity = selectedAi.severity || selectedQueuePatient?.urgency || selectedPatientPreview?.todayTriage?.priorityLevel || '-';
+    const selectedOnsetType = selectedAi.onset_type || '-';
+    const selectedSymptomCategory = selectedAi.symptom_category || selectedPatientPreview?.todayTriage?.symptomCategory || '-';
+    const selectedDepartment = selectedAi.department || selectedQueuePatient?.department || '-';
+
     return (
       <section className="space-y-5">
         <article className="card">
@@ -519,7 +555,9 @@ export default function DoctorPortalPage() {
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="mb-1 text-sm font-semibold text-slate-800">AI Summary</p>
                 <p className="text-sm text-slate-600">
-                  {selectedQueuePatient.explainabilitySummary
+                  {selectedRawAnalysis?.explainability_summary
+                    || selectedQueuePatient.explainabilitySummary
+                    || selectedPatientPreview?.todayTriage?.explainabilitySummary
                     || selectedPatientPreview?.todayTriage?.triageNotes
                     || 'No explainability summary available.'}
                 </p>
@@ -527,16 +565,45 @@ export default function DoctorPortalPage() {
 
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="mb-1 text-sm font-semibold text-slate-800">Historical Summary</p>
-                <p className="text-sm text-slate-600">{selectedQueuePatient.historicalSummary || 'No historical summary available.'}</p>
+                <p className="text-sm text-slate-600">{selectedRawAnalysis?.historical_summary ?? selectedQueuePatient.historicalSummary ?? selectedPatientPreview?.todayTriage?.historicalSummary ?? 'No historical summary available.'}</p>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-3">
-                <p className="mb-2 text-sm font-semibold text-slate-800">Priority Reason</p>
-                <ul className="list-disc pl-5 text-sm text-slate-600">
-                  {(selectedPatientPreview?.todayTriage?.redFlags || ['Chief complaint severity', 'Current vitals trend', 'Clinical risk factors']).map((reason, idx) => (
-                    <li key={`${reason}-${idx}`}>{reason}</li>
-                  ))}
-                </ul>
+                <p className="mb-2 text-sm font-semibold text-slate-800">AI Clinical Extraction</p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <p className="text-xs text-slate-600"><span className="font-semibold text-slate-700">Chief Complaint:</span> {selectedAi.chief_complaint || selectedQueuePatient.symptoms || '-'}</p>
+                  <p className="text-xs text-slate-600"><span className="font-semibold text-slate-700">Severity:</span> {String(selectedSeverity)}</p>
+                  <p className="text-xs text-slate-600"><span className="font-semibold text-slate-700">Onset Type:</span> {String(selectedOnsetType)}</p>
+                  <p className="text-xs text-slate-600"><span className="font-semibold text-slate-700">Symptom Category:</span> {String(selectedSymptomCategory)}</p>
+                  <p className="text-xs text-slate-600 sm:col-span-2"><span className="font-semibold text-slate-700">Department:</span> {String(selectedDepartment)}</p>
+                </div>
+
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Extracted Symptoms</p>
+                    {!selectedSymptoms.length ? <p className="mt-1 text-xs text-slate-500">No symptoms extracted.</p> : (
+                      <ul className="mt-1 list-disc pl-4 text-xs text-slate-600">
+                        {selectedSymptoms.map((symptom, idx) => <li key={`${symptom}-${idx}`}>{symptom}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Detected Red Flags</p>
+                    {!selectedRedFlags.length ? <p className="mt-1 text-xs text-slate-500">No red flags detected.</p> : (
+                      <ul className="mt-1 list-disc pl-4 text-xs text-slate-600">
+                        {selectedRedFlags.map((flag, idx) => <li key={`${flag}-${idx}`}>{flag}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Comorbidities</p>
+                    {!selectedComorbidities.length ? <p className="mt-1 text-xs text-slate-500">No comorbidities extracted.</p> : (
+                      <ul className="mt-1 list-disc pl-4 text-xs text-slate-600">
+                        {selectedComorbidities.map((item, idx) => <li key={`${item}-${idx}`}>{item}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -947,27 +1014,78 @@ export default function DoctorPortalPage() {
   }
 
   function renderHistory() {
-    const recentVisits = selectedPatientPreview?.recentVisits || [];
+    const treatedPatients = doctorHistory?.treatedPatients || [];
+    const visits = doctorHistory?.visits || [];
+    const totals = doctorHistory?.totals || { totalVisits: 0, totalPatientsTreated: 0, treatedToday: 0 };
 
     return (
       <section className="card space-y-4">
         <h2 className="text-xl font-semibold text-slate-900">Patient History</h2>
-        {!recentVisits.length && (
-          <p className="text-sm text-slate-500">
-            No live visit history loaded yet. Select a queue patient to load history. Demo fallback: Feb 12 Fever - Viral, Feb 20 Chest Pain - Observation.
-          </p>
-        )}
-        {!!recentVisits.length && (
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs uppercase tracking-wide text-slate-500">Total Visits</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{totals.totalVisits || 0}</p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs uppercase tracking-wide text-slate-500">Patients Treated</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{totals.totalPatientsTreated || 0}</p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs uppercase tracking-wide text-slate-500">Treated Today</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{totals.treatedToday || 0}</p>
+          </div>
+        </div>
+
+        <article className="rounded-xl border border-slate-200 bg-white p-3">
+          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">Treated Patients</h3>
+          {!treatedPatients.length ? (
+            <p className="text-sm text-slate-500">No treated patients found yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500">
+                    <th className="px-2 py-1">Patient</th>
+                    <th className="px-2 py-1">Phone</th>
+                    <th className="px-2 py-1">Visits</th>
+                    <th className="px-2 py-1">Last Visit</th>
+                    <th className="px-2 py-1">Last Diagnosis</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {treatedPatients.map((patient) => (
+                    <tr key={patient.patientId} className="border-t border-slate-100">
+                      <td className="px-2 py-2 font-semibold text-slate-800">{patient.name}</td>
+                      <td className="px-2 py-2 text-slate-600">{patient.phone || '-'}</td>
+                      <td className="px-2 py-2 text-slate-700">{patient.visitsCount || 0}</td>
+                      <td className="px-2 py-2 text-slate-700">{patient.lastVisitDate ? new Date(patient.lastVisitDate).toLocaleDateString() : '-'}</td>
+                      <td className="px-2 py-2 text-slate-600">{patient.lastDiagnosis || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </article>
+
+        <article className="rounded-xl border border-slate-200 bg-white p-3">
+          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">Recent Visits / Treatments</h3>
+          {!visits.length && <p className="text-sm text-slate-500">No visit records available yet.</p>}
+          {!!visits.length && (
           <div className="space-y-2">
-            {recentVisits.map((visit, index) => (
-              <div key={`${visit.date}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="text-sm font-semibold text-slate-800">{new Date(visit.date).toLocaleDateString()} - {visit.chiefComplaint || 'Visit'}</p>
+            {visits.map((visit) => (
+              <div key={visit.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-sm font-semibold text-slate-800">{new Date(visit.visitDate).toLocaleDateString()} - {visit.patientName || 'Patient'}</p>
+                <p className="text-xs text-slate-600">Chief Complaint: {visit.chiefComplaint || '-'}</p>
                 <p className="text-xs text-slate-600">Diagnosis: {visit.diagnosis || 'Pending'}</p>
-                <p className="text-xs text-slate-600">Notes: {visit.treatment || visit.doctorNotes || 'No notes'}</p>
+                <p className="text-xs text-slate-600">Treatment: {visit.treatment || 'No treatment notes'}</p>
+                <p className="text-xs text-slate-600">Doctor Notes: {visit.doctorNotes || '-'}</p>
               </div>
             ))}
           </div>
-        )}
+          )}
+        </article>
       </section>
     );
   }

@@ -98,6 +98,34 @@ const triageRecordSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  historicalSummary: {
+    type: String,
+    default: null
+  },
+  extractedSymptoms: {
+    type: [String],
+    default: []
+  },
+  extractedComorbidities: {
+    type: [String],
+    default: []
+  },
+  onsetType: {
+    type: String,
+    default: null
+  },
+  aiSeverity: {
+    type: String,
+    default: null
+  },
+  aiAnalysis: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
+  analyzeOutput: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
 
   // Queue Information
   queuePosition: {

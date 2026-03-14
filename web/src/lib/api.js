@@ -124,6 +124,12 @@ export async function getPatientPreview(doctorId, patientId, token) {
   });
 }
 
+export async function getDoctorPatientHistory(doctorId, token, limit = 100) {
+  return request(`/doctors/${doctorId}/patients/history?limit=${encodeURIComponent(limit)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export async function callNextPatient(doctorId, token) {
   return request(`/doctors/${doctorId}/call-next`, {
     method: 'POST',
