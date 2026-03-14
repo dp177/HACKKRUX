@@ -38,18 +38,24 @@ async function translateText(text, targetLang) {
 
 async function transcribeTwilioAudio(mediaUrl, languageCode = 'en-US') {
   try {
-    // Download the audio file from Twilio
-    const response = await axios.get(mediaUrl, { responseType: 'arraybuffer' });
+    // NEW: Pass Twilio credentials to authorize the download
+    const response = await axios.get(mediaUrl, { 
+      responseType: 'arraybuffer',
+      auth: {
+        username: process.env.TWILIO_ACCOUNT_SID,
+        password: process.env.TWILIO_AUTH_TOKEN
+      }
+    });
+    
     const audioBytes = Buffer.from(response.data).toString('base64');
 
-    // Twilio WhatsApp voice notes are typically OGG_OPUS at 16000Hz
     const request = {
       audio: { content: audioBytes },
       config: {
         encoding: 'OGG_OPUS',
         sampleRateHertz: 16000, 
         languageCode: languageCode,
-        alternativeLanguageCodes: ['en-US', 'hi-IN', 'gu-IN'] // Help Google guess
+        alternativeLanguageCodes: ['en-US', 'hi-IN', 'gu-IN']
       },
     };
 
@@ -59,7 +65,7 @@ async function transcribeTwilioAudio(mediaUrl, languageCode = 'en-US') {
       .join('\n');
     return transcription;
   } catch (error) {
-    console.error('Transcription error:', error);
+    console.error('Transcription error:', error.message);
     return null;
   }
 }

@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Constants from 'expo-constants';
+import { Audio } from 'expo-av';
 import * as Speech from 'expo-speech';
-import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
-import { triageChatNext } from '../api';
+import { triageChatNext, triageTranscribeAudio } from '../api';
 import { colors, radii, spacing } from '../theme/tokens';
 
 const TRIAGE_COMPLETE_TOKEN = '[TRIAGE_COMPLETE]';
 
-export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText }) {
+export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText, token }) {
   const [conversation, setConversation] = useState([]);
   const [subtitle, setSubtitle] = useState('Tap Start to begin voice triage.');
   const [listening, setListening] = useState(false);
@@ -16,15 +16,15 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
   const [busy, setBusy] = useState(false);
   const [voiceReady, setVoiceReady] = useState(false);
   const [runtimeMode, setRuntimeMode] = useState('native');
+  const [recording, setRecording] = useState(false);
   const [lastTranscript, setLastTranscript] = useState('');
   const [awaitingExpoGoAnswer, setAwaitingExpoGoAnswer] = useState(false);
+  const [manualAnswer, setManualAnswer] = useState('');
+  const [showManualInput, setShowManualInput] = useState(false);
 
   const voiceRef = useRef(null);
   const ttsRef = useRef(null);
-  const conversationRef = useRef([]);
-  const busyRef = useRef(false);
-  const awaitingExpoGoAnswerRef = useRef(false);
-  const lastSubmittedTranscriptRef = useRef('');
+  const recordingRef = useRef(null);
   const ttsFinishSubscriptionRef = useRef(null);
   const shouldResumeListeningRef = useRef(false);
   const ttsEnabledRef = useRef(true);
@@ -40,135 +40,6 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
   }
 
   useEffect(() => {
-    conversationRef.current = conversation;
-  }, [conversation]);
-
-  useEffect(() => {
-    busyRef.current = busy;
-  }, [busy]);
-
-  useEffect(() => {
-    awaitingExpoGoAnswerRef.current = awaitingExpoGoAnswer;
-  }, [awaitingExpoGoAnswer]);
-
-  function extractTranscriptFromSpeechEvent(event) {
-    if (!event) return '';
-
-    if (typeof event.transcript === 'string' && event.transcript.trim()) {
-      return event.transcript.trim();
-    }
-
-    const candidates = Array.isArray(event.results) ? event.results : [];
-    for (const item of candidates) {
-      if (item && typeof item.transcript === 'string' && item.transcript.trim()) {
-        return item.transcript.trim();
-      }
-
-      if (Array.isArray(item) && item[0] && typeof item[0].transcript === 'string' && item[0].transcript.trim()) {
-        return item[0].transcript.trim();
-      }
-    }
-
-    return '';
-  }
-
-  function isFinalSpeechEvent(event) {
-    if (!event) return true;
-    if (typeof event.isFinal === 'boolean') return event.isFinal;
-
-    const candidates = Array.isArray(event.results) ? event.results : [];
-    if (!candidates.length) return true;
-
-    return candidates.some((item) => {
-      if (typeof item?.isFinal === 'boolean') return item.isFinal;
-      if (Array.isArray(item) && typeof item[0]?.isFinal === 'boolean') return item[0].isFinal;
-      return false;
-    });
-  }
-
-  async function submitExpoGoTranscript(transcript) {
-    const normalized = String(transcript || '').trim();
-    if (!normalized) {
-      logEvent('expo_go_submit_skipped_empty_transcript');
-      return;
-    }
-
-    if (normalized === lastSubmittedTranscriptRef.current) {
-      logEvent('expo_go_submit_skipped_duplicate_transcript', {
-        transcriptPreview: normalized.slice(0, 80)
-      });
-      return;
-    }
-
-    lastSubmittedTranscriptRef.current = normalized;
-    setSubtitle(`You: ${normalized}`);
-
-    const updatedHistory = [...conversationRef.current, { role: 'user', content: normalized }];
-    setConversation(updatedHistory);
-    setAwaitingExpoGoAnswer(false);
-    logEvent('expo_go_submit_transcript', {
-      transcriptPreview: normalized.slice(0, 120),
-      historyLength: updatedHistory.length
-    });
-
-    await askNextQuestion(updatedHistory);
-  }
-
-  useSpeechRecognitionEvent('start', () => {
-    if (runtimeMode !== 'expo-go') return;
-    setListening(true);
-    console.log('[VoiceTriage] expo_go_listening_start', { sessionId: sessionIdRef.current });
-  });
-
-  useSpeechRecognitionEvent('end', () => {
-    if (runtimeMode !== 'expo-go') return;
-    setListening(false);
-    console.log('[VoiceTriage] expo_go_listening_end', { sessionId: sessionIdRef.current });
-  });
-
-  useSpeechRecognitionEvent('error', (event) => {
-    if (runtimeMode !== 'expo-go') return;
-    setListening(false);
-    console.log('[VoiceTriage] expo_go_stt_error', {
-      sessionId: sessionIdRef.current,
-      code: event?.error || null,
-      message: event?.message || null
-    });
-    onError?.(event?.message || 'Speech recognition failed. Please try again.');
-  });
-
-  useSpeechRecognitionEvent('result', async (event) => {
-    if (runtimeMode !== 'expo-go') return;
-
-    const transcript = extractTranscriptFromSpeechEvent(event);
-    if (transcript) {
-      setLastTranscript(transcript);
-      setSubtitle(`You: ${transcript}`);
-    }
-
-    const finalResult = isFinalSpeechEvent(event);
-    if (!finalResult || !transcript || !awaitingExpoGoAnswerRef.current || busyRef.current) {
-      logEvent('expo_go_result_ignored', {
-        finalResult,
-        hasTranscript: Boolean(transcript),
-        awaitingAnswer: awaitingExpoGoAnswerRef.current,
-        busy: busyRef.current
-      });
-      return;
-    }
-
-    try {
-      await submitExpoGoTranscript(transcript);
-    } catch (error) {
-      console.log('[VoiceTriage] expo_go_submit_error', {
-        sessionId: sessionIdRef.current,
-        message: error?.message || 'unknown error'
-      });
-      onError?.(error?.message || 'Could not process speech result');
-    }
-  });
-
-  useEffect(() => {
     let mounted = true;
     logEvent('setup_start');
 
@@ -178,7 +49,7 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
           logEvent('expo_go_detected');
           setRuntimeMode('expo-go');
           setVoiceReady(true);
-          setSubtitle('Voice input active in Expo Go. Tap Record, speak, then stop to transcribe.');
+          setSubtitle('Voice input active in Expo Go. Tap Start Voice Triage, then record your answer.');
           return;
         }
 
@@ -199,26 +70,18 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
             ttsEnabledRef.current = true;
           } catch (ttsInitError) {
             ttsEnabledRef.current = false;
-            console.log('[VoiceTriage] tts_init_unavailable', {
-              sessionId: sessionIdRef.current,
+            logEvent('tts_init_unavailable', {
               message: ttsInitError?.message || 'unknown error'
             });
           }
         }
 
-        Voice.onSpeechResults = handleSpeechResults;
-        Voice.onSpeechError = handleSpeechError;
-
-        logEvent('modules_ready', {
-          hasVoiceStart: Boolean(Voice?.start),
-          hasTtsSpeak: Boolean(Tts?.speak),
-          ttsEnabled: ttsEnabledRef.current
-        });
+        Voice.onSpeechResults = handleNativeSpeechResults;
+        Voice.onSpeechError = handleNativeSpeechError;
 
         if (ttsEnabledRef.current && typeof Tts?.addEventListener === 'function') {
           ttsFinishSubscriptionRef.current = Tts.addEventListener('tts-finish', () => {
-            console.log('[VoiceTriage] tts_finish', {
-              sessionId: sessionIdRef.current,
+            logEvent('tts_finish', {
               resumeListening: shouldResumeListeningRef.current
             });
             setSpeaking(false);
@@ -228,6 +91,12 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
             }
           });
         }
+
+        logEvent('modules_ready', {
+          hasVoiceStart: Boolean(Voice?.start),
+          hasTtsSpeak: Boolean(Tts?.speak),
+          ttsEnabled: ttsEnabledRef.current
+        });
 
         setVoiceReady(true);
       } catch (error) {
@@ -277,12 +146,12 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
     }
 
     try {
-      if (runtimeMode === 'expo-go') {
-        ExpoSpeechRecognitionModule.abort();
-      }
+      await recordingRef.current?.stopAndUnloadAsync?.();
     } catch {
       // ignore cleanup errors
     } finally {
+      recordingRef.current = null;
+      setRecording(false);
       setListening(false);
     }
 
@@ -291,6 +160,7 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
 
   async function speak(text) {
     const Tts = ttsRef.current;
+
     if (runtimeMode === 'expo-go') {
       setSubtitle(`AI: ${text}`);
       try {
@@ -309,15 +179,12 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
     try {
       setSpeaking(true);
       setSubtitle(`AI: ${text}`);
-      logEvent('speak_start', {
-        textLength: String(text || '').length
-      });
+      logEvent('speak_start', { textLength: String(text || '').length });
 
       try {
         await Tts.stop?.();
       } catch (stopError) {
-        console.log('[VoiceTriage] speak_stop_error', {
-          sessionId: sessionIdRef.current,
+        logEvent('speak_stop_error', {
           message: stopError?.message || 'unknown error'
         });
       }
@@ -329,7 +196,6 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
         message: error?.message || 'unknown error'
       });
 
-      // Disable TTS for current session and continue voice capture without spoken prompts.
       ttsEnabledRef.current = false;
       setSpeaking(false);
       setSubtitle(`AI: ${text}`);
@@ -338,9 +204,7 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
   }
 
   async function startListening() {
-    if (runtimeMode === 'expo-go') {
-      return;
-    }
+    if (runtimeMode === 'expo-go') return;
 
     const Voice = voiceRef.current;
     if (!Voice?.start) return;
@@ -354,7 +218,6 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
         message: error?.message || 'unknown error'
       });
 
-      // If native bridge is missing, auto-fallback to text mode.
       if ((error?.message || '').toLowerCase().includes('startspeech')) {
         setVoiceReady(false);
         onFallbackToText?.();
@@ -387,9 +250,8 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
   async function askNextQuestion(history) {
     try {
       setBusy(true);
-      logEvent('ask_next_start', {
-        historyLength: Array.isArray(history) ? history.length : 0
-      });
+      logEvent('ask_next_start', { historyLength: Array.isArray(history) ? history.length : 0 });
+
       const data = await triageChatNext(history);
       const nextQuestion = Array.isArray(data?.questions) ? data.questions[0] : null;
 
@@ -399,16 +261,12 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
       });
 
       if (!nextQuestion) {
-        logEvent('ask_next_missing_question');
         onError?.('No follow-up question returned by triage AI');
         return;
       }
 
       if (nextQuestion === TRIAGE_COMPLETE_TOKEN) {
-        console.log('[VoiceTriage] triage_complete_token', {
-          sessionId: sessionIdRef.current,
-          historyLength: Array.isArray(history) ? history.length : 0
-        });
+        logEvent('triage_complete_token', { historyLength: Array.isArray(history) ? history.length : 0 });
         await stopListening();
         await speak('Thank you. I have all the information I need. Calculating your priority now.');
         onComplete?.(history);
@@ -424,7 +282,7 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
         setAwaitingExpoGoAnswer(true);
         setListening(false);
         setSpeaking(false);
-        setSubtitle('Tap Start Listening and answer by voice.');
+        setSubtitle('Tap Start Recording and answer by voice.');
         return;
       }
 
@@ -444,111 +302,193 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
     }
   }
 
-  async function handleSpeechResults(event) {
+  async function handleNativeSpeechResults(event) {
     const spoken = Array.isArray(event?.value) ? event.value[0] : '';
     const userText = String(spoken || '').trim();
-    console.log('[VoiceTriage] speech_result', {
-      sessionId: sessionIdRef.current,
+
+    logEvent('speech_result', {
       alternatives: Array.isArray(event?.value) ? event.value.length : 0,
       transcriptPreview: userText.slice(0, 120)
     });
+
     setListening(false);
 
     if (!userText) {
       shouldResumeListeningRef.current = false;
-      console.log('[VoiceTriage] empty_speech_retry', { sessionId: sessionIdRef.current });
+      logEvent('empty_speech_retry');
       setTimeout(startListening, 600);
       return;
     }
 
     setSubtitle(`You: ${userText}`);
-
     const updatedHistory = [...conversation, { role: 'user', content: userText }];
     setConversation(updatedHistory);
     await askNextQuestion(updatedHistory);
   }
 
-  function handleSpeechError(event) {
+  function handleNativeSpeechError(event) {
     setListening(false);
     const message = event?.error?.message || 'Voice recognition error';
-    console.log('[VoiceTriage] speech_error', {
-      sessionId: sessionIdRef.current,
+
+    logEvent('speech_error', {
       message,
       raw: event?.error || null
     });
+
     onError?.(message);
   }
 
   async function handleStartVoiceFlow() {
     logEvent('start_requested', {
       voiceReady,
-      busy
+      busy,
+      awaitingExpoGoAnswer
     });
-    if (!voiceReady || busy) {
-      logEvent('start_ignored', { voiceReady, busy });
+
+    if (!voiceReady || busy || (runtimeMode === 'expo-go' && awaitingExpoGoAnswer)) {
+      logEvent('start_ignored');
       return;
     }
+
     const seedHistory = [];
     setConversation(seedHistory);
     setLastTranscript('');
+    setManualAnswer('');
+    setShowManualInput(false);
     setAwaitingExpoGoAnswer(false);
     await askNextQuestion(seedHistory);
   }
 
-  async function startExpoGoListening() {
-    if (busy || !voiceReady || runtimeMode !== 'expo-go' || !awaitingExpoGoAnswer) {
-      logEvent('expo_go_stt_start_ignored', {
-        busy,
-        voiceReady,
-        awaitingExpoGoAnswer
-      });
+  async function submitManualExpoGoAnswer() {
+    const userText = String(manualAnswer || '').trim();
+    if (!userText || busy || runtimeMode !== 'expo-go' || !awaitingExpoGoAnswer) {
       return;
     }
+
     try {
-      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      setBusy(true);
+      setSubtitle(`You: ${userText}`);
+      setLastTranscript(userText);
+      setManualAnswer('');
+      setShowManualInput(false);
+
+      const updatedHistory = [...conversation, { role: 'user', content: userText }];
+      setConversation(updatedHistory);
+      setAwaitingExpoGoAnswer(false);
+
+      logEvent('expo_go_manual_answer_submit', {
+        answerLength: userText.length,
+        historyLength: updatedHistory.length
+      });
+
+      await askNextQuestion(updatedHistory);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startExpoGoRecording() {
+    if (busy || !voiceReady || runtimeMode !== 'expo-go' || !awaitingExpoGoAnswer) {
+      logEvent('expo_go_record_start_ignored', { busy, voiceReady, awaitingExpoGoAnswer });
+      return;
+    }
+
+    try {
+      const permission = await Audio.requestPermissionsAsync();
       logEvent('expo_go_permission_result', {
         granted: Boolean(permission?.granted),
         status: permission?.status || null,
         canAskAgain: permission?.canAskAgain ?? null
       });
+
       if (!permission?.granted) {
         onError?.('Microphone permission is required for voice input.');
         return;
       }
 
-      setSubtitle('Listening... speak now, then tap Stop Listening.');
-      ExpoSpeechRecognitionModule.start({
-        lang: 'en-US',
-        interimResults: true,
-        continuous: false,
-        maxAlternatives: 1,
-        requiresOnDeviceRecognition: false,
-        androidIntentOptions: {
-          EXTRA_LANGUAGE_MODEL: 'web_search'
-        }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false
       });
 
-      logEvent('expo_go_stt_start_requested');
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await rec.startAsync();
+
+      recordingRef.current = rec;
+      setRecording(true);
+      setListening(true);
+      setSubtitle('Listening... speak now, then tap Stop Recording.');
+
+      logEvent('expo_go_recording_start');
     } catch (error) {
-      logEvent('expo_go_stt_start_error', {
+      logEvent('expo_go_recording_error', {
         message: error?.message || 'unknown error'
       });
-      onError?.(error?.message || 'Could not start listening');
+      onError?.(error?.message || 'Could not start recording');
+      setRecording(false);
       setListening(false);
     }
   }
 
-  function stopExpoGoListening() {
+  async function stopExpoGoRecordingAndTranscribe() {
     if (runtimeMode !== 'expo-go') return;
+    if (!recordingRef.current) {
+      logEvent('expo_go_record_stop_ignored_no_recording');
+      return;
+    }
+
     try {
-      ExpoSpeechRecognitionModule.stop();
+      setBusy(true);
+      setRecording(false);
       setListening(false);
-      logEvent('expo_go_stt_stop_requested');
+
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
+      recordingRef.current = null;
+
+      if (!uri) {
+        logEvent('expo_go_transcribe_missing_uri');
+        onError?.('Recording failed. Please try again.');
+        return;
+      }
+
+      const data = await triageTranscribeAudio({ fileUri: uri, token });
+      const transcript = String(data?.transcript || '').trim();
+      setLastTranscript(transcript);
+
+      if (!transcript) {
+        logEvent('expo_go_transcribe_empty_result');
+        onError?.('Could not detect speech. Please record again.');
+        setAwaitingExpoGoAnswer(true);
+        return;
+      }
+
+      setSubtitle(`You: ${transcript}`);
+      const updatedHistory = [...conversation, { role: 'user', content: transcript }];
+      setConversation(updatedHistory);
+      setAwaitingExpoGoAnswer(false);
+      setShowManualInput(false);
+      setManualAnswer('');
+
+      logEvent('expo_go_transcribe_success', {
+        transcriptPreview: transcript.slice(0, 120),
+        historyLength: updatedHistory.length
+      });
+
+      await askNextQuestion(updatedHistory);
     } catch (error) {
-      logEvent('expo_go_stt_stop_error', {
+      logEvent('expo_go_transcribe_error', {
         message: error?.message || 'unknown error'
       });
-      onError?.(error?.message || 'Could not stop listening');
+      onError?.('Transcription is unavailable right now. You can still continue by typing your answer below.');
+      setAwaitingExpoGoAnswer(true);
+      setShowManualInput(true);
+      setSubtitle('Transcription unavailable. Type your answer below to continue.');
+    } finally {
+      setBusy(false);
+      logEvent('expo_go_recording_stop');
     }
   }
 
@@ -557,7 +497,7 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
       <Text style={styles.title}>Voice Triage</Text>
       <Text style={styles.subtitle}>
         {runtimeMode === 'expo-go'
-          ? 'Expo Go mode: tap Record, speak, then tap Stop to transcribe.'
+          ? 'Expo Go mode: Start triage, then record each answer and transcribe.'
           : 'Answer by voice. Live subtitles will appear below.'}
       </Text>
 
@@ -591,15 +531,36 @@ export default function VoiceTriageAgent({ onComplete, onError, onFallbackToText
       {runtimeMode === 'expo-go' ? (
         <View style={styles.expoGoControls}>
           <TouchableOpacity
-            style={[styles.button, listening ? styles.stopButton : styles.recordButton, (!voiceReady || busy || !awaitingExpoGoAnswer) && styles.buttonDisabled]}
-            onPress={listening ? stopExpoGoListening : startExpoGoListening}
+            style={[styles.button, recording ? styles.stopButton : styles.recordButton, (!voiceReady || busy || !awaitingExpoGoAnswer) && styles.buttonDisabled]}
+            onPress={recording ? stopExpoGoRecordingAndTranscribe : startExpoGoRecording}
             disabled={!voiceReady || busy || !awaitingExpoGoAnswer}
           >
-            <Text style={styles.buttonText}>{listening ? 'Stop Listening' : 'Start Listening'}</Text>
+            <Text style={styles.buttonText}>{recording ? 'Stop Recording' : 'Start Recording'}</Text>
           </TouchableOpacity>
 
           {lastTranscript ? (
             <Text style={styles.transcriptText}>Last transcript: {lastTranscript}</Text>
+          ) : null}
+
+          {showManualInput ? (
+            <View style={styles.manualInputWrap}>
+              <Text style={styles.manualInputLabel}>Type your answer</Text>
+              <TextInput
+                style={styles.manualInput}
+                value={manualAnswer}
+                onChangeText={setManualAnswer}
+                placeholder="Describe your symptoms"
+                multiline
+                editable={!busy}
+              />
+              <TouchableOpacity
+                style={[styles.button, styles.manualSubmitButton, (!manualAnswer.trim() || busy || !awaitingExpoGoAnswer) && styles.buttonDisabled]}
+                onPress={submitManualExpoGoAnswer}
+                disabled={!manualAnswer.trim() || busy || !awaitingExpoGoAnswer}
+              >
+                {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Submit Typed Answer</Text>}
+              </TouchableOpacity>
+            </View>
           ) : null}
         </View>
       ) : null}
@@ -724,6 +685,36 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 12,
     lineHeight: 18
+  },
+  manualInputWrap: {
+    marginTop: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    padding: spacing.sm,
+    backgroundColor: '#fafafa'
+  },
+  manualInputLabel: {
+    fontFamily: 'Inter_600SemiBold',
+    color: colors.primaryDark,
+    fontSize: 12,
+    marginBottom: 6
+  },
+  manualInput: {
+    minHeight: 70,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: colors.text,
+    fontFamily: 'Inter_400Regular',
+    textAlignVertical: 'top',
+    backgroundColor: '#fff'
+  },
+  manualSubmitButton: {
+    marginTop: spacing.sm,
+    backgroundColor: colors.primaryDark
   },
   textFallbackButton: {
     marginTop: spacing.sm,

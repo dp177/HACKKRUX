@@ -20,7 +20,51 @@ const {
 
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || TRIAGE_AI_URL;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
-const speechClient = new speech.SpeechClient();
+
+function createSpeechClient() {
+  try {
+    const keyFilename = normalizeOptionalString(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+    const inlineCredentialsRaw = normalizeOptionalString(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+
+    if (inlineCredentialsRaw) {
+      const parsed = JSON.parse(inlineCredentialsRaw);
+      const projectId = normalizeOptionalString(process.env.GOOGLE_CLOUD_PROJECT) || normalizeOptionalString(parsed?.project_id);
+
+      console.log('[TriageTranscribe] speech_client_init', {
+        mode: 'inline-json',
+        hasProjectId: Boolean(projectId)
+      });
+
+      return new speech.SpeechClient({
+        credentials: parsed,
+        ...(projectId ? { projectId } : {})
+      });
+    }
+
+    if (keyFilename) {
+      console.log('[TriageTranscribe] speech_client_init', {
+        mode: 'key-file',
+        hasKeyFilePath: true
+      });
+
+      return new speech.SpeechClient({ keyFilename });
+    }
+
+    console.log('[TriageTranscribe] speech_client_init', {
+      mode: 'application-default',
+      hasGoogleApplicationCredentials: false
+    });
+
+    return new speech.SpeechClient();
+  } catch (error) {
+    console.error('[TriageTranscribe] speech_client_init_failed', {
+      message: error?.message || 'unknown error'
+    });
+    return null;
+  }
+}
+
+const speechClient = createSpeechClient();
 
 function parseMaybeJson(value, fallback = null) {
   if (value === undefined || value === null) return fallback;
@@ -279,6 +323,13 @@ router.post('/chat-next', authenticateAny, async (req, res) => {
 router.post('/transcribe', authenticateAny, upload.single('file'), async (req, res) => {
   const traceId = req.headers['x-trace-id'] || buildTraceId('transcribe');
   try {
+    if (!speechClient) {
+      return res.status(503).json({
+        traceId,
+        error: 'Speech transcription service is not configured on server'
+      });
+    }
+
     if (!req.file?.buffer?.length) {
       return res.status(400).json({ error: 'audio file is required' });
     }
@@ -290,6 +341,8 @@ router.post('/transcribe', authenticateAny, upload.single('file'), async (req, r
       traceId,
       role: req.role,
       resolvedUserId: req.userId || null,
+      hasGoogleApplicationCredentials: Boolean(normalizeOptionalString(process.env.GOOGLE_APPLICATION_CREDENTIALS)),
+      hasInlineGoogleCredentials: Boolean(normalizeOptionalString(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON)),
       languageCode,
       encoding,
       fileName: req.file.originalname || null,
