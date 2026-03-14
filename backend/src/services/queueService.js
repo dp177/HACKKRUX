@@ -129,11 +129,18 @@ async function emitDepartmentQueueSnapshot(departmentId) {
       queueEntryId: String(entry._id),
       patientId: String(entry.patientId?._id || entry.patientId),
       patientName: entry.patientId ? `${entry.patientId.firstName} ${entry.patientId.lastName}` : 'Patient',
+      queue_position: entry.queuePosition,
       position: entry.queuePosition,
       priorityLevel: entry.priorityLevel,
+      urgency_level: entry.urgencyLevel,
       riskScore: entry.riskScore,
+      total_risk_score: entry.riskScore,
       joinedAt: entry.joinedAt,
-      estimatedWaitMinutes: entry.estimatedWaitMinutes
+      estimatedWaitMinutes: entry.estimatedWaitMinutes,
+      wait_minutes: entry.estimatedWaitMinutes,
+      waited_minutes: entry.waitTimeMinutes,
+      department: entry.departmentName || null,
+      chief_complaint: 'General consultation'
     }))
   });
 }
@@ -292,8 +299,11 @@ async function getDepartmentQueueForDoctorDepartment(departmentId) {
     .sort({ queuePosition: 1 });
 }
 
-async function callNextFromDepartmentQueue(departmentId) {
+async function callNextFromDepartmentQueue(departmentId, options = {}) {
   if (!departmentId) return null;
+
+  const doctorName = options?.doctorName ? String(options.doctorName) : 'Doctor';
+  const doctorId = options?.doctorId ? String(options.doctorId) : null;
 
   const startedAt = Date.now();
   console.log('[queueService] call_next_start', { departmentId: String(departmentId) });
@@ -314,14 +324,19 @@ async function callNextFromDepartmentQueue(departmentId) {
 
   const io = getSocketServer();
   if (io) {
-    io.to(`patient:${String(nextEntry.patientId)}`).emit('queue:update', {
+    const calledPayload = {
       patientId: String(nextEntry.patientId),
       queueEntryId: String(nextEntry._id),
       status: nextEntry.status,
       calledAt: nextEntry.calledAt,
+      doctorId,
+      doctorName,
       notificationType: 'PATIENT_CALLED',
-      message: 'It is your turn. Please proceed to consultation room.'
-    });
+      message: `${doctorName} has called you. Please reach consultation now.`
+    };
+
+    io.to(`patient:${String(nextEntry.patientId)}`).emit('queue:update', calledPayload);
+    io.to(`patient:${String(nextEntry.patientId)}`).emit('patient:called', calledPayload);
   }
 
   await recalculateDepartmentQueue(departmentId);

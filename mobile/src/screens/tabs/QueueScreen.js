@@ -14,7 +14,9 @@ export default function QueueScreen() {
     }
 
   const token = useAuthStore((state) => state.token);
+  const user = useAuthStore((state) => state.user);
   const activeQueue = usePatientFlowStore((state) => state.activeQueue);
+  const setActiveQueue = usePatientFlowStore((state) => state.setActiveQueue);
   const [loading, setLoading] = useState(true);
   const [queueData, setQueueData] = useState(null);
 
@@ -41,7 +43,8 @@ export default function QueueScreen() {
           departmentName: status?.departmentName || activeQueue?.departmentName || null,
           hospitalName: status?.hospitalName || activeQueue?.hospitalName || null,
           departmentId: status?.departmentId || activeQueue?.departmentId,
-          hospitalId: status?.hospitalId || activeQueue?.hospitalId
+          hospitalId: status?.hospitalId || activeQueue?.hospitalId,
+          patientId: status?.patientId || activeQueue?.patientId || user?.id || user?._id || null
         };
         setQueueData(merged);
         console.log('[QueueScreen] latest_triage_loaded', {
@@ -64,13 +67,34 @@ export default function QueueScreen() {
             });
           });
 
+          socket.on('patient:called', (payload) => {
+            if (!alive || !payload) return;
+            const currentPatientId = String(user?.id || user?._id || activeQueue?.patientId || status?.patientId || '');
+            if (currentPatientId && String(payload.patientId || '') !== currentPatientId) {
+              return;
+            }
+
+            const doctorName = payload?.doctorName || 'Doctor';
+            Alert.alert('Called By Doctor', payload.message || `${doctorName} has called you. Please reach consultation now.`);
+            setQueueData(null);
+            setActiveQueue(null);
+          });
+
           socket.on('queue:update', (payload) => {
             if (!alive || !payload) return;
             console.log('[QueueScreen] socket_queue_update', payload);
 
+            const currentPatientId = String(user?.id || user?._id || activeQueue?.patientId || status?.patientId || '');
+            const payloadPatientId = String(payload?.patientId || '');
+            if (currentPatientId && payloadPatientId && payloadPatientId !== currentPatientId) {
+              return;
+            }
+
             if (payload.notificationType === 'PATIENT_CALLED' || payload.status === 'IN_CONSULTATION') {
-              Alert.alert('Patient Called', payload.message || 'It is your turn. Please proceed to consultation room.');
+              const doctorName = payload?.doctorName || 'Doctor';
+              Alert.alert('Called By Doctor', payload.message || `${doctorName} has called you. Please reach consultation now.`);
               setQueueData(null);
+              setActiveQueue(null);
               return;
             }
 
@@ -97,7 +121,7 @@ export default function QueueScreen() {
       clearInterval(timer);
       if (socket) socket.disconnect();
     };
-  }, [token, activeQueue]);
+  }, [token, user, activeQueue, setActiveQueue]);
 
   return (
     <ScrollView

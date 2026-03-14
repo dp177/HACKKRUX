@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import { io } from 'socket.io-client';
 import {
   addDoctorSlot,
   addDoctorBreak,
@@ -62,16 +63,30 @@ function priorityBadge(priority) {
 }
 
 function queueRowFromRaw(item, index) {
-  const score = Number(item.total_risk_score || item.totalRiskScore || item.score || 0);
+  const rawPatientId =
+    item.patient_id
+    || item.patientId
+    || item?.patient?._id
+    || item?.patient?.id
+    || null;
+  const patientId = rawPatientId && typeof rawPatientId === 'object'
+    ? String(rawPatientId._id || rawPatientId.id || '')
+    : String(rawPatientId || '');
+
+  const score = Number(item.total_risk_score || item.totalRiskScore || item.riskScore || item.score || 0);
   const priority = normalizePriority(item.priority_level || item.priorityLevel || item.priority || (score >= 85 ? 'critical' : score >= 65 ? 'high' : score >= 40 ? 'medium' : 'low'));
   return {
-    id: item.patient_id || item.patientId || item.id || `queue-${index}`,
-    name: item.patient_name || item.name || `Patient ${index + 1}`,
+    id: patientId || item.id || `queue-${index}`,
+    name: item.patient_name || item.patientName || item.name || `Patient ${index + 1}`,
     symptoms: item.chief_complaint || item.symptoms || 'Symptoms pending',
+    department: item.department || item.ai_analysis?.department || 'General',
     urgency: priority,
     score,
-    waitTime: item.wait_time || `${item.estimated_wait_minutes ?? item.wait_minutes ?? 0} min`,
-    waitedTime: `${item.waited_minutes ?? 0} min`
+    waitTime: item.wait_time || `${item.estimated_wait_minutes ?? item.estimatedWaitMinutes ?? item.wait_minutes ?? 0} min`,
+    waitedTime: `${item.waited_minutes ?? 0} min`,
+    explainabilitySummary: item.explainability_summary || item.ai_analysis?.summary || '',
+    historicalSummary: item.historical_summary || '',
+    aiAnalysis: item.ai_analysis || null
   };
 }
 
@@ -135,13 +150,7 @@ export default function DoctorPortalPage() {
 
   const queue = useMemo(() => {
     const patients = dashboard?.currentQueue?.patients || [];
-    if (!patients.length) {
-      return [
-        { id: 'fallback-1', name: 'Rahul Verma', symptoms: 'Chest pain and sweating', urgency: 'critical', score: 92, waitTime: '5 min' },
-        { id: 'fallback-2', name: 'Priya Singh', symptoms: 'Fever and fatigue', urgency: 'medium', score: 58, waitTime: '20 min' },
-        { id: 'fallback-3', name: 'Anil Kumar', symptoms: 'Headache', urgency: 'low', score: 22, waitTime: '45 min' }
-      ];
-    }
+    if (!patients.length) return [];
     return patients.map(queueRowFromRaw).sort((a, b) => b.score - a.score);
   }, [dashboard]);
 
@@ -198,6 +207,51 @@ export default function DoctorPortalPage() {
 
     return () => clearInterval(timer);
   }, [token, doctor?.id]);
+
+  useEffect(() => {
+    const departmentId = dashboard?.doctor?.departmentId;
+    if (!token || !departmentId) {
+      return;
+    }
+
+    const base = process.env.NEXT_PUBLIC_SOCKET_URL
+      || String(process.env.NEXT_PUBLIC_API_BASE_URL || '').replace('/api', '')
+      || 'http://localhost:5000';
+
+    const socket = io(base, {
+      transports: ['websocket', 'polling'],
+      timeout: 8000
+    });
+
+    socket.on('connect', () => {
+      socket.emit('queue:subscribe', { departmentId: String(departmentId) });
+    });
+
+    socket.on('queue:department:update', (payload) => {
+      if (!payload || String(payload.departmentId) !== String(departmentId)) return;
+
+      setDashboard((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          currentQueue: {
+            ...(prev.currentQueue || {}),
+            waiting_count: payload.waitingCount,
+            patients: payload.patients || []
+          },
+          statistics: {
+            ...(prev.statistics || {}),
+            patientsWaiting: payload.waitingCount
+          }
+        };
+      });
+    });
+
+    return () => {
+      socket.emit('queue:unsubscribe', { departmentId: String(departmentId) });
+      socket.disconnect();
+    };
+  }, [token, dashboard?.doctor?.departmentId]);
 
   useEffect(() => {
     refreshAvailabilityData({ silent: true });
@@ -268,9 +322,9 @@ export default function DoctorPortalPage() {
   async function handleSelectQueuePatient(item) {
     setSelectedQueuePatient(item);
 
-    if (!doctor?.id || !token || String(item.id).startsWith('fallback-')) {
+    if (!doctor?.id || !token || !item?.id || String(item.id).length < 8) {
       setSelectedPatientPreview(null);
-      toast.info('Showing fallback patient detail (live record not available)');
+      toast.warning('Live patient preview not available for this record');
       return;
     }
 
@@ -420,6 +474,7 @@ export default function DoctorPortalPage() {
                 <tr className="text-left text-slate-500">
                   <th className="px-2 py-1">Patient</th>
                   <th className="px-2 py-1">Symptoms</th>
+                  <th className="px-2 py-1">Department</th>
                   <th className="px-2 py-1">Urgency</th>
                   <th className="px-2 py-1">Score</th>
                   <th className="px-2 py-1">Waited</th>
@@ -427,6 +482,11 @@ export default function DoctorPortalPage() {
                 </tr>
               </thead>
               <tbody>
+                {!queue.length ? (
+                  <tr>
+                    <td className="px-2 py-3 text-slate-500" colSpan={7}>No patients in queue.</td>
+                  </tr>
+                ) : null}
                 {queue.map((item) => (
                   <tr
                     key={item.id}
@@ -435,6 +495,7 @@ export default function DoctorPortalPage() {
                   >
                     <td className="px-2 py-2 font-semibold text-slate-800">{item.name}</td>
                     <td className="px-2 py-2 text-slate-600">{item.symptoms}</td>
+                    <td className="px-2 py-2 text-slate-700">{item.department}</td>
                     <td className="px-2 py-2">{priorityBadge(item.urgency)}</td>
                     <td className="px-2 py-2 text-slate-700">{item.score}</td>
                     <td className="px-2 py-2 text-slate-700">{item.waitedTime}</td>
@@ -458,9 +519,15 @@ export default function DoctorPortalPage() {
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="mb-1 text-sm font-semibold text-slate-800">AI Summary</p>
                 <p className="text-sm text-slate-600">
-                  {selectedPatientPreview?.todayTriage?.triageNotes
-                    || `Patient ${selectedQueuePatient.name} has ${selectedQueuePatient.symptoms.toLowerCase()} with elevated risk indicators. Please prioritize based on vitals and complaint duration.`}
+                  {selectedQueuePatient.explainabilitySummary
+                    || selectedPatientPreview?.todayTriage?.triageNotes
+                    || 'No explainability summary available.'}
                 </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="mb-1 text-sm font-semibold text-slate-800">Historical Summary</p>
+                <p className="text-sm text-slate-600">{selectedQueuePatient.historicalSummary || 'No historical summary available.'}</p>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-3">

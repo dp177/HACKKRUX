@@ -148,7 +148,7 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
         await recalculateDepartmentQueue(doctor.departmentId);
         const waiting = await Queue.find({ departmentId: doctor.departmentId, status: 'WAITING' })
           .populate('patientId', 'firstName lastName')
-          .populate('triageRecordId', 'chiefComplaint')
+          .populate('triageRecordId', 'chiefComplaint triageNotes redFlags symptomCategory recommendedSpecialty')
           .sort({ queuePosition: 1 });
 
         const avgWait = waiting.length
@@ -161,13 +161,27 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
             patient_id: row.patientId?._id || row.patientId,
             patient_name: row.patientId ? `${row.patientId.firstName} ${row.patientId.lastName}` : 'Patient',
             chief_complaint: row.triageRecordId?.chiefComplaint || 'General consultation',
+            department: row.departmentName || row.triageRecordId?.recommendedSpecialty || null,
+            explainability_summary: row.triageRecordId?.triageNotes || null,
+            historical_summary: null,
             priority_level: row.priorityLevel,
             urgency_level: row.urgencyLevel,
             total_risk_score: row.riskScore,
+            risk_score: row.riskScore,
             wait_minutes: row.estimatedWaitMinutes,
             estimated_wait_minutes: row.estimatedWaitMinutes,
             waited_minutes: row.waitTimeMinutes,
-            queue_position: row.queuePosition
+            queue_position: row.queuePosition,
+            ai_analysis: {
+              chief_complaint: row.triageRecordId?.chiefComplaint || 'General consultation',
+              extracted_symptoms: row.triageRecordId?.symptomCategory ? [row.triageRecordId.symptomCategory] : [],
+              detected_red_flags: Array.isArray(row.triageRecordId?.redFlags) ? row.triageRecordId.redFlags : [],
+              severity: row.priorityLevel,
+              symptom_category: row.triageRecordId?.symptomCategory || null,
+              onset_type: null,
+              department: row.departmentName || row.triageRecordId?.recommendedSpecialty || null,
+              extracted_comorbidities: []
+            }
           })),
           statistics: {
             waiting_count: waiting.length,
@@ -189,6 +203,7 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
       doctor: {
         id: doctor.id,
         name: `Dr. ${doctor.firstName} ${doctor.lastName}`,
+        departmentId: doctor.departmentId?._id || doctor.departmentId || null,
         specialty: doctor.specialty,
         department: doctor.departmentId?.name || 'General',
         consultationDuration: doctor.consultationDuration
@@ -418,7 +433,10 @@ router.post('/:doctorId/call-next', authenticateDoctor, async (req, res) => {
       return res.status(404).json({ error: 'Doctor not found' });
     }
 
-    const queueEntry = await callNextFromDepartmentQueue(doctor.departmentId);
+    const queueEntry = await callNextFromDepartmentQueue(doctor.departmentId, {
+      doctorId: doctor.id,
+      doctorName: `Dr. ${doctor.firstName} ${doctor.lastName}`
+    });
     if (!queueEntry) {
       return res.json({ message: 'No patients waiting in queue' });
     }
