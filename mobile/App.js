@@ -34,6 +34,10 @@ export default function App() {
 
       try {
         const { registerForPushNotificationsAsync } = await import('./src/notifications/push');
+        if (typeof registerForPushNotificationsAsync !== 'function') {
+          console.log('[MobileApp] push_registration_unavailable');
+          return;
+        }
         const expoPushToken = await registerForPushNotificationsAsync();
         if (!expoPushToken) {
           return;

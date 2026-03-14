@@ -4,6 +4,7 @@
  */
 
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
 const { Appointment, Doctor, Patient, Department, DoctorSchedule, DoctorBreak, DoctorSlot } = require('../models');
 const { authenticatePatient, authenticateDoctor, authenticateAny } = require('../middleware/auth');
@@ -297,8 +298,12 @@ function generateTimeSlots(startTime, endTime, durationMinutes, bookedTimes) {
 // GET APPOINTMENT DETAILS
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/:appointmentId', authenticateAny, async (req, res) => {
+router.get('/:appointmentId', authenticateAny, async (req, res, next) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.appointmentId)) {
+      return next();
+    }
+
     const appointment = await Appointment.findById(req.params.appointmentId)
       .populate('patientId')
       .populate('doctorId')
