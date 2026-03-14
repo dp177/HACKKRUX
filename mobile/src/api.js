@@ -414,6 +414,14 @@ export function logoutAuth(token) {
   });
 }
 
+export function registerPushToken(expoPushToken, token) {
+  return request('/auth/push-token', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ expoPushToken })
+  });
+}
+
 // ── Triage AI ──────────────────────────────────────────────────────────────
 
 // HuggingFace triage AI service (chat questions — no auth needed, no DB write)

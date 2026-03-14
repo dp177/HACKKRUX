@@ -145,6 +145,39 @@ router.post('/logout', async (_req, res) => {
   return res.json({ message: 'Logged out successfully' });
 });
 
+router.post('/push-token', authenticatePatient, async (req, res) => {
+  try {
+    const expoPushToken = String(req.body?.expoPushToken || '').trim();
+    if (!expoPushToken) {
+      return res.status(400).json({ error: 'expoPushToken is required' });
+    }
+
+    if (!expoPushToken.startsWith('ExponentPushToken[') && !expoPushToken.startsWith('ExpoPushToken[')) {
+      return res.status(400).json({ error: 'Invalid Expo push token format' });
+    }
+
+    const patient = await Patient.findById(req.userId);
+    if (!patient) {
+      return res.status(404).json({ error: 'Patient not found' });
+    }
+
+    const current = Array.isArray(patient.expoPushTokens) ? patient.expoPushTokens : [];
+    if (!current.includes(expoPushToken)) {
+      patient.expoPushTokens = [...current, expoPushToken].slice(-5);
+    }
+    patient.lastPushTokenUpdatedAt = new Date();
+    await patient.save();
+
+    return res.json({
+      message: 'Push token saved',
+      tokensStored: patient.expoPushTokens.length
+    });
+  } catch (error) {
+    console.error('push-token save error:', error?.message || error);
+    return res.status(500).json({ error: 'Failed to save push token' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // PATIENT REGISTRATION
 // ═══════════════════════════════════════════════════════════════

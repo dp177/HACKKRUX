@@ -5,11 +5,13 @@ import AuthScreen from './src/screens/auth/AuthScreen';
 import AppTabs from './src/navigation/AppTabs';
 import { useAuthStore } from './src/store/authStore';
 import { colors } from './src/theme/tokens';
+import { registerPushToken } from './src/api';
 
 export default function App() {
   const hydrated = useAuthStore((state) => state.hydrated);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const loading = useAuthStore((state) => state.loading);
+  const token = useAuthStore((state) => state.token);
   const restoreSession = useAuthStore((state) => state.restoreSession);
 
   const [fontsLoaded] = useFonts({
@@ -25,6 +27,27 @@ export default function App() {
       restoreSession();
     }
   }, [hydrated, restoreSession]);
+
+  useEffect(() => {
+    async function setupPush() {
+      if (!isAuthenticated || !token) return;
+
+      try {
+        const { registerForPushNotificationsAsync } = await import('./src/notifications/push');
+        const expoPushToken = await registerForPushNotificationsAsync();
+        if (!expoPushToken) {
+          return;
+        }
+
+        await registerPushToken(expoPushToken, token);
+        console.log('[MobileApp] push_token_registered');
+      } catch (error) {
+        console.log('[MobileApp] push_token_register_error', { message: error?.message || 'unknown' });
+      }
+    }
+
+    setupPush();
+  }, [isAuthenticated, token]);
 
   if (!fontsLoaded || !hydrated || loading) {
     return (

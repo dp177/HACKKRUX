@@ -84,6 +84,15 @@ const queueSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  calledByDoctorId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Doctor',
+    default: null
+  },
+  calledByDoctorName: {
+    type: String,
+    default: null
+  },
   startedAt: {
     type: Date,
     default: null

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, DeviceEventEmitter, Dimensions, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { io } from 'socket.io-client';
 import { getMyQueueStatus } from '../../api';
@@ -19,6 +19,7 @@ export default function QueueScreen() {
   const setActiveQueue = usePatientFlowStore((state) => state.setActiveQueue);
   const [loading, setLoading] = useState(true);
   const [queueData, setQueueData] = useState(null);
+  const lastCallAlertKeyRef = useRef('');
 
   useEffect(() => {
     let alive = true;
@@ -46,6 +47,20 @@ export default function QueueScreen() {
           hospitalId: status?.hospitalId || activeQueue?.hospitalId,
           patientId: status?.patientId || activeQueue?.patientId || user?.id || user?._id || null
         };
+
+        if (status?.status === 'IN_CONSULTATION' || status?.notificationType === 'PATIENT_CALLED') {
+          const alertKey = String(status?.calledAt || status?.queueEntryId || 'called');
+          if (lastCallAlertKeyRef.current !== alertKey) {
+            lastCallAlertKeyRef.current = alertKey;
+            const doctorName = status?.doctorName || 'Doctor';
+            Alert.alert('Called By Doctor', status?.message || `${doctorName} has called you. Please reach consultation now.`);
+          }
+
+          setQueueData(null);
+          setActiveQueue(null);
+          return;
+        }
+
         setQueueData(merged);
         console.log('[QueueScreen] latest_triage_loaded', {
           hasLatest: Boolean(merged),

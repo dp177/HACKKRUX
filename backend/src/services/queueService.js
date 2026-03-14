@@ -1,4 +1,5 @@
-const { Queue, Doctor, Department, Hospital } = require('../models');
+const axios = require('axios');
+const { Queue, Doctor, Department, Hospital, Patient } = require('../models');
 const { getSocketServer } = require('../utils/socketServer');
 const { rescoreBatch } = require('./triageService');
 
@@ -29,6 +30,43 @@ function mapUrgencyToPriorityScore(urgency, riskScore) {
         : 0;
 
   return Math.max(0, score + bonus);
+}
+
+async function sendPatientPushNotification(patientId, title, body, data = {}) {
+  const patient = await Patient.findById(patientId).select('expoPushTokens').lean();
+  const tokens = Array.isArray(patient?.expoPushTokens) ? patient.expoPushTokens.filter(Boolean) : [];
+  if (!tokens.length) {
+    console.log('[queueService] push_skipped_no_tokens', { patientId: String(patientId) });
+    return;
+  }
+
+  const messages = tokens.map((to) => ({
+    to,
+    sound: 'default',
+    title,
+    body,
+    data
+  }));
+
+  try {
+    const { data: receipt } = await axios.post('https://exp.host/--/api/v2/push/send', messages, {
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      timeout: 10000
+    });
+    console.log('[queueService] push_sent', {
+      patientId: String(patientId),
+      tokenCount: tokens.length,
+      receiptCount: Array.isArray(receipt?.data) ? receipt.data.length : 0
+    });
+  } catch (error) {
+    console.error('[queueService] push_send_failed', {
+      patientId: String(patientId),
+      message: error?.message || 'unknown error'
+    });
+  }
 }
 
 async function getAvgConsultationMinutesForDepartment(departmentId) {
@@ -67,6 +105,8 @@ function queuePayload(entry, avgConsultationMinutes) {
     patientsAhead,
     estimatedWaitMinutes,
     waitTimeMinutes,
+    calledAt: entry.calledAt || null,
+    doctorName: entry.calledByDoctorName || null,
     priorityLevel: entry.priorityLevel,
     riskScore: Number(entry.riskScore || 0),
     status: entry.status,
@@ -246,6 +286,8 @@ async function enqueuePatientToDepartmentQueue({ patientId, triageRecordId, depa
       estimatedWaitMinutes: 0,
       waitTimeMinutes: 0,
       calledAt: null,
+      calledByDoctorId: null,
+      calledByDoctorName: null,
       startedAt: null,
       completedAt: null
     },
@@ -272,7 +314,14 @@ async function getPatientQueueStatus(patientId) {
     patientId: patientId ? String(patientId) : null
   });
 
-  const entry = await Queue.findOne({ patientId, status: 'WAITING' }).sort({ updatedAt: -1 });
+  let entry = await Queue.findOne({ patientId, status: 'WAITING' }).sort({ updatedAt: -1 });
+
+  // Fallback: if patient has already been called, return IN_CONSULTATION state
+  // so mobile can still show "it's your turn" even if socket was missed.
+  if (!entry) {
+    entry = await Queue.findOne({ patientId, status: 'IN_CONSULTATION' }).sort({ calledAt: -1, updatedAt: -1 });
+  }
+
   if (!entry) {
     console.log('[queueService] patient_status_empty', {
       patientId: patientId ? String(patientId) : null
@@ -282,6 +331,12 @@ async function getPatientQueueStatus(patientId) {
 
   const avgConsultationMinutes = await getAvgConsultationMinutesForDepartment(entry.departmentId);
   const payload = queuePayload(entry, avgConsultationMinutes);
+
+  if (entry.status === 'IN_CONSULTATION') {
+    payload.notificationType = 'PATIENT_CALLED';
+    payload.message = `${entry.calledByDoctorName || 'Doctor'} has called you. Please reach consultation now.`;
+  }
+
   console.log('[queueService] patient_status_done', {
     patientId: String(patientId),
     departmentId: entry.departmentId ? String(entry.departmentId) : null,
@@ -319,6 +374,8 @@ async function callNextFromDepartmentQueue(departmentId, options = {}) {
 
   nextEntry.status = 'IN_CONSULTATION';
   nextEntry.calledAt = new Date();
+  nextEntry.calledByDoctorId = doctorId || null;
+  nextEntry.calledByDoctorName = doctorName;
   nextEntry.startedAt = new Date();
   await nextEntry.save();
 
@@ -338,6 +395,18 @@ async function callNextFromDepartmentQueue(departmentId, options = {}) {
     io.to(`patient:${String(nextEntry.patientId)}`).emit('queue:update', calledPayload);
     io.to(`patient:${String(nextEntry.patientId)}`).emit('patient:called', calledPayload);
   }
+
+  await sendPatientPushNotification(
+    nextEntry.patientId,
+    'Doctor has called you',
+    `${doctorName} has called you. Please reach consultation now.`,
+    {
+      type: 'PATIENT_CALLED',
+      doctorId,
+      doctorName,
+      queueEntryId: String(nextEntry._id)
+    }
+  );
 
   await recalculateDepartmentQueue(departmentId);
   console.log('[queueService] call_next_done', {

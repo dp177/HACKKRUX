@@ -176,6 +176,16 @@ const patientSchema = new mongoose.Schema({
   totalVisits: {
     type: Number,
     default: 0
+  },
+
+  // Push Notifications
+  expoPushTokens: {
+    type: [String],
+    default: []
+  },
+  lastPushTokenUpdatedAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true,
