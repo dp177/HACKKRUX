@@ -134,6 +134,10 @@ app.use('/api/walkins', require('./routes/walkins'));
 app.use('/api/queue', require('./routes/queue'));
 app.use('/api/v1/queue', require('./routes/queue'));
 
+// Medicine + Prescription routes (doctor portal)
+app.use('/api/medicines', require('./routes/medicines'));
+app.use('/api/prescriptions', require('./routes/prescriptions'));
+
 // WhatsApp booking webhook route (Twilio)
 app.use('/api/v1', require('./routes/whatsapp'));
 

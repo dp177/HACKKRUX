@@ -150,6 +150,31 @@ export async function getDoctorProfile(token) {
   });
 }
 
+export async function searchMedicines(search, token, limit = 20) {
+  const query = new URLSearchParams({
+    ...(search ? { search: String(search) } : {}),
+    limit: String(limit)
+  });
+
+  return request(`/medicines?${query.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export async function getPatientPrescriptions(patientId, token) {
+  return request(`/prescriptions/patient/${encodeURIComponent(patientId)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export async function createPrescription(payload, token) {
+  return request('/prescriptions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+}
+
 export async function getDepartments() {
   return request('/departments');
 }

@@ -26,6 +26,8 @@ const DoctorSchedule = require('./DoctorSchedule');
 const DoctorBreak = require('./DoctorBreak');
 const DoctorSlot = require('./DoctorSlot');
 const User = require('./User');
+const Medicine = require('./Medicine');
+const Prescription = require('./Prescription');
 const WhatsAppConversation = require('./WhatsAppConversation');
 const HospitalOnboardingRequest = require('../features/hospital-onboarding/hospitalOnboardingRequestModel');
 const HospitalStaff = require('../features/hospital-portal/hospitalStaffModel');
@@ -88,6 +90,8 @@ module.exports = {
   DoctorBreak,
   DoctorSlot,
   User,
+  Medicine,
+  Prescription,
   WhatsAppConversation,
   HospitalOnboardingRequest,
   HospitalStaff,

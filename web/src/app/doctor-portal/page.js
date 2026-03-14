@@ -15,12 +15,15 @@ import {
   getDoctorBreaksForDate,
   getDoctorPatientHistory,
   getDoctorProfile,
+  getPatientPrescriptions,
   getDoctorScheduleForDate,
   getDoctorSlotsForDate,
   getPatientPreview,
+  searchMedicines,
   setDoctorSchedule,
   updateDoctorBreak,
-  updateDoctorSlot
+  updateDoctorSlot,
+  createPrescription
 } from '../../lib/api';
 
 const NAV_ITEMS = [
@@ -49,6 +52,21 @@ const DEFAULT_AVAILABILITY = [
   { day: 'Saturday', start: '', end: '', available: false, emergency: false },
   { day: 'Sunday', start: '', end: '', available: false, emergency: false }
 ];
+
+const QUICK_FREQUENCY_OPTIONS = ['1-0-1', '1-1-1', '0-1-0', '0-0-1', 'SOS', 'OD', 'BD', 'TDS'];
+const QUICK_DURATION_OPTIONS = ['3 days', '5 days', '7 days', '10 days', '14 days', '1 month'];
+const QUICK_INSTRUCTION_OPTIONS = ['After food', 'Before food', 'At bedtime', 'With water', 'As needed'];
+
+function createMedicineEntry(base = {}) {
+  return {
+    medicineId: String(base.medicineId || base._id || ''),
+    name: String(base.name || '').trim(),
+    dosage: String(base.dosage || '').trim(),
+    frequency: String(base.frequency || '1-0-1').trim(),
+    duration: String(base.duration || '5 days').trim(),
+    instructions: String(base.instructions || 'After food').trim()
+  };
+}
 
 function normalizePriority(raw) {
   const value = String(raw || '').toLowerCase();
@@ -137,6 +155,26 @@ export default function DoctorPortalPage() {
 
   const [selectedQueuePatient, setSelectedQueuePatient] = useState(null);
   const [selectedPatientPreview, setSelectedPatientPreview] = useState(null);
+  const [patientPrescriptions, setPatientPrescriptions] = useState([]);
+  const [showAllPrescriptionHistory, setShowAllPrescriptionHistory] = useState(false);
+  const [expandedPrescriptionId, setExpandedPrescriptionId] = useState(null);
+  const [medicineSearchText, setMedicineSearchText] = useState('');
+  const [medicineSearchResults, setMedicineSearchResults] = useState([]);
+  const [medicineSearchLoading, setMedicineSearchLoading] = useState(false);
+  const [medicineSearchError, setMedicineSearchError] = useState('');
+  const [customMedicineName, setCustomMedicineName] = useState('');
+  const [bulkFrequency, setBulkFrequency] = useState('1-0-1');
+  const [bulkDuration, setBulkDuration] = useState('5 days');
+  const [bulkInstructions, setBulkInstructions] = useState('After food');
+  const [prescriptionSubmitting, setPrescriptionSubmitting] = useState(false);
+  const [prescriptionForm, setPrescriptionForm] = useState({
+    diagnosis: '',
+    temperature: '',
+    bloodPressure: '',
+    notes: '',
+    remarks: '',
+    medicines: []
+  });
 
   const [availability, setAvailability] = useState(DEFAULT_AVAILABILITY);
   const [availabilityDate, setAvailabilityDate] = useState(new Date().toISOString().slice(0, 10));
@@ -280,6 +318,20 @@ export default function DoctorPortalPage() {
           }
         };
       });
+
+      // Sync selectedQueuePatient status if it changed in this update
+      setSelectedQueuePatient((prev) => {
+        if (!prev) return prev;
+        const updatedRaw = (payload.patients || []).find((p) => {
+          const entryId = String(p.queue_entry_id || p.queueEntryId || p.entryId || '');
+          return entryId && entryId === prev.queueEntryId;
+        });
+        if (!updatedRaw) return prev;
+        const rawStatus = String(updatedRaw.status || '').toUpperCase();
+        const newStatus = ['IN_CONSULTATION', 'WAITING', 'COMPLETED', 'CANCELLED'].includes(rawStatus) ? rawStatus : 'WAITING';
+        if (newStatus === prev.status) return prev;
+        return { ...prev, status: newStatus };
+      });
     });
 
     return () => {
@@ -291,6 +343,56 @@ export default function DoctorPortalPage() {
   useEffect(() => {
     refreshAvailabilityData({ silent: true });
   }, [doctor?.id, token, availabilityDate]);
+
+  useEffect(() => {
+    const q = String(medicineSearchText || '').trim();
+
+    if (!q || q.length < 2) {
+      setMedicineSearchResults([]);
+      setMedicineSearchError('');
+      setMedicineSearchLoading(false);
+      return undefined;
+    }
+
+    if (!token) {
+      setMedicineSearchResults([]);
+      setMedicineSearchError('Not authenticated - please reload the page.');
+      setMedicineSearchLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        setMedicineSearchLoading(true);
+        setMedicineSearchError('');
+        const result = await searchMedicines(q, token, 12);
+        if (cancelled) return;
+
+        if (Array.isArray(result)) {
+          setMedicineSearchResults(result);
+          setMedicineSearchError(result.length ? '' : `No medicines found for "${q}"`);
+        } else {
+          setMedicineSearchResults([]);
+          setMedicineSearchError('Unexpected response from server.');
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.error('Medicine search error:', err);
+        setMedicineSearchResults([]);
+        setMedicineSearchError(err?.message || 'Failed to search medicines. Check if backend is running.');
+      } finally {
+        if (!cancelled) {
+          setMedicineSearchLoading(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [medicineSearchText, token]);
 
   async function refreshAvailabilityData({ silent = false } = {}) {
     if (!doctor?.id || !availabilityDate) return;
@@ -362,20 +464,192 @@ export default function DoctorPortalPage() {
 
   async function handleSelectQueuePatient(item) {
     setSelectedQueuePatient(item);
+    setPrescriptionForm({
+      diagnosis: '',
+      temperature: '',
+      bloodPressure: '',
+      notes: '',
+      remarks: '',
+      medicines: []
+    });
+    setMedicineSearchText('');
+    setMedicineSearchResults([]);
+    setMedicineSearchError('');
+    setShowAllPrescriptionHistory(false);
+    setExpandedPrescriptionId(null);
+    setCustomMedicineName('');
+    setBulkFrequency('1-0-1');
+    setBulkDuration('5 days');
+    setBulkInstructions('After food');
 
     if (!doctor?.id || !token || !item?.id || String(item.id).length < 8) {
       setSelectedPatientPreview(null);
+      setPatientPrescriptions([]);
       toast.warning('Live patient preview not available for this record');
       return;
     }
 
     try {
-      const data = await getPatientPreview(doctor.id, item.id, token);
+      const [data, history] = await Promise.all([
+        getPatientPreview(doctor.id, item.id, token),
+        getPatientPrescriptions(item.id, token)
+      ]);
       setSelectedPatientPreview(data);
+      setPatientPrescriptions(Array.isArray(history) ? history : []);
       toast.success('Patient detail loaded');
     } catch (error) {
       setSelectedPatientPreview(null);
+      setPatientPrescriptions([]);
       toast.warning(error.message || 'Preview not available for this patient');
+    }
+  }
+
+  function addMedicineToPrescription(item) {
+    if (!item?._id || !item?.name) return;
+
+    const defaultStrength = Array.isArray(item.strength) && item.strength.length ? item.strength[0] : '';
+    addMedicineToPrescriptionWithDetails(item, defaultStrength);
+  }
+
+  function addMedicineToPrescriptionWithDetails(item, selectedStrength = '') {
+    if (!item?._id || !item?.name) return;
+
+    setPrescriptionForm((prev) => {
+      if (prev.medicines.some((m) => String(m.medicineId) === String(item._id) && String(m.dosage || '') === String(selectedStrength || ''))) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        medicines: [
+          ...prev.medicines,
+          createMedicineEntry({
+            medicineId: String(item._id),
+            name: item.name,
+            dosage: selectedStrength || '',
+            frequency: bulkFrequency,
+            duration: bulkDuration,
+            instructions: bulkInstructions
+          })
+        ]
+      };
+    });
+
+    setMedicineSearchText('');
+    setMedicineSearchResults([]);
+    setMedicineSearchError('');
+  }
+
+  function addCustomMedicineToPrescription() {
+    const name = String(customMedicineName || '').trim();
+    if (!name) return;
+
+    setPrescriptionForm((prev) => ({
+      ...prev,
+      medicines: [
+        ...prev.medicines,
+        createMedicineEntry({
+          medicineId: '',
+          name,
+          dosage: '',
+          frequency: bulkFrequency,
+          duration: bulkDuration,
+          instructions: bulkInstructions
+        })
+      ]
+    }));
+
+    setCustomMedicineName('');
+  }
+
+  function updatePrescriptionMedicine(index, field, value) {
+    setPrescriptionForm((prev) => {
+      const medicines = [...prev.medicines];
+      medicines[index] = {
+        ...medicines[index],
+        [field]: value
+      };
+      return {
+        ...prev,
+        medicines
+      };
+    });
+  }
+
+  function removePrescriptionMedicine(index) {
+    setPrescriptionForm((prev) => {
+      const medicines = prev.medicines.filter((_, idx) => idx !== index);
+      return {
+        ...prev,
+        medicines
+      };
+    });
+  }
+
+  function duplicatePrescriptionMedicine(index) {
+    setPrescriptionForm((prev) => {
+      const item = prev.medicines[index];
+      if (!item) return prev;
+      return {
+        ...prev,
+        medicines: [
+          ...prev.medicines,
+          createMedicineEntry(item)
+        ]
+      };
+    });
+  }
+
+  function applyBulkDefaultsToAllMedicines() {
+    setPrescriptionForm((prev) => ({
+      ...prev,
+      medicines: prev.medicines.map((med) => ({
+        ...med,
+        frequency: bulkFrequency,
+        duration: bulkDuration,
+        instructions: bulkInstructions
+      }))
+    }));
+  }
+
+  async function handleGeneratePrescription() {
+    if (!selectedQueuePatient?.queueEntryId || !token) {
+      toast.warning('Select an in-consultation patient first');
+      return;
+    }
+
+    if (selectedQueuePatient.status !== 'IN_CONSULTATION') {
+      toast.warning('Prescription can be generated only while patient is in consultation');
+      return;
+    }
+
+    if (!String(prescriptionForm.diagnosis || '').trim()) {
+      toast.warning('Diagnosis is required');
+      return;
+    }
+
+    try {
+      setPrescriptionSubmitting(true);
+
+      await createPrescription({
+        consultationId: selectedQueuePatient.queueEntryId,
+        form: {
+          diagnosis: prescriptionForm.diagnosis,
+          temperature: prescriptionForm.temperature,
+          bloodPressure: prescriptionForm.bloodPressure,
+          notes: prescriptionForm.notes
+        },
+        medicines: prescriptionForm.medicines,
+        remarks: prescriptionForm.remarks
+      }, token);
+
+      toast.success('Prescription generated and consultation completed');
+      await handleSelectQueuePatient(selectedQueuePatient);
+      await loadPortalData(true);
+    } catch (error) {
+      toast.error(error.message || 'Failed to generate prescription');
+    } finally {
+      setPrescriptionSubmitting(false);
     }
   }
 
@@ -385,6 +659,15 @@ export default function DoctorPortalPage() {
     try {
       const response = await callNextPatient(doctor.id, token);
       toast.success(response.message || 'Next patient called');
+
+      // Immediately update selectedQueuePatient status if the called patient is currently selected
+      if (response?.patient?.id) {
+        setSelectedQueuePatient((prev) => {
+          if (!prev || prev.id !== String(response.patient.id)) return prev;
+          return { ...prev, status: 'IN_CONSULTATION' };
+        });
+      }
+
       loadPortalData(true);
     } catch (error) {
       toast.error(error.message || 'Unable to call next patient');
@@ -576,7 +859,7 @@ export default function DoctorPortalPage() {
               <p><span className="font-semibold">Urgency:</span> {priorityBadge(selectedQueuePatient.urgency)}</p>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="mb-1 text-sm font-semibold text-slate-800">AI Summary</p>
+                <p className="mb-1 text-sm font-semibold text-slate-800">Extended Summary</p>
                 <p className="text-sm text-slate-600">
                   {selectedRawAnalysis?.explainability_summary
                     || selectedQueuePatient.explainabilitySummary
@@ -628,6 +911,269 @@ export default function DoctorPortalPage() {
                   </div>
                 </div>
               </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-slate-800">Previous Prescriptions</p>
+                  <span className="text-xs text-slate-500">{patientPrescriptions.length} records</span>
+                </div>
+
+                {!patientPrescriptions.length ? (
+                  <p className="text-xs text-slate-500">No previous prescriptions found.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {(showAllPrescriptionHistory ? patientPrescriptions : patientPrescriptions.slice(0, 5)).map((item) => {
+                      const isExpanded = expandedPrescriptionId === item.id;
+                      const full = item.full || {};
+                      const fullMedicines = full.medicines || [];
+                      return (
+                        <div key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+                          {/* Summary row — click to expand */}
+                          <button
+                            type="button"
+                            onClick={() => setExpandedPrescriptionId(isExpanded ? null : item.id)}
+                            className="w-full text-left p-2 hover:bg-slate-100 transition-colors"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold text-slate-700">{new Date(item.date).toLocaleDateString()}</p>
+                                <p className="text-xs text-slate-600">Diagnosis: {item.diagnosis || 'Not recorded'}</p>
+                                <p className="text-xs text-slate-500 truncate">Medicines: {(item.medicines || []).join(', ') || 'Not recorded'}</p>
+                              </div>
+                              <span className="shrink-0 text-slate-400 text-xs">{isExpanded ? '▲' : '▼'}</span>
+                            </div>
+                          </button>
+
+                          {/* Expanded detail */}
+                          {isExpanded && (
+                            <div className="border-t border-slate-200 bg-white p-3 space-y-3">
+                              {/* Doctor */}
+                              {item.doctorName && (
+                                <p className="text-xs text-slate-500">Prescribed by: <span className="font-medium text-slate-700">{item.doctorName}</span></p>
+                              )}
+
+                              {/* Vitals */}
+                              {(full.form?.temperature || full.form?.bloodPressure || full.form?.notes) && (
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-600 mb-1">Vitals / Notes</p>
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                                    {full.form?.temperature && <span className="text-xs text-slate-600">Temp: {full.form.temperature}</span>}
+                                    {full.form?.bloodPressure && <span className="text-xs text-slate-600">BP: {full.form.bloodPressure}</span>}
+                                  </div>
+                                  {full.form?.notes && <p className="text-xs text-slate-600 mt-1">Notes: {full.form.notes}</p>}
+                                </div>
+                              )}
+
+                              {/* Medicines table */}
+                              {fullMedicines.length > 0 && (
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-600 mb-1">Medicines ({fullMedicines.length})</p>
+                                  <div className="space-y-2">
+                                    {fullMedicines.map((med, idx) => (
+                                      <div key={idx} className="rounded border border-slate-100 bg-slate-50 p-2">
+                                        <p className="text-xs font-semibold text-slate-800">{med.name}</p>
+                                        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
+                                          {med.dosage && <span className="text-xs text-slate-500">Dose: <span className="text-slate-700">{med.dosage}</span></span>}
+                                          {med.frequency && <span className="text-xs text-slate-500">Freq: <span className="text-slate-700">{med.frequency}</span></span>}
+                                          {med.duration && <span className="text-xs text-slate-500">Duration: <span className="text-slate-700">{med.duration}</span></span>}
+                                        </div>
+                                        {med.instructions && <p className="text-xs text-slate-500 mt-0.5">Instructions: <span className="text-slate-700">{med.instructions}</span></p>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Remarks */}
+                              {full.remarks && (
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-600">Remarks</p>
+                                  <p className="text-xs text-slate-600">{full.remarks}</p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {patientPrescriptions.length > 5 ? (
+                      <div className="pt-1">
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => setShowAllPrescriptionHistory((prev) => !prev)}
+                        >
+                          {showAllPrescriptionHistory ? 'Show Less' : `View More (${patientPrescriptions.length - 5} more)`}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+
+              {selectedQueuePatient.status === 'IN_CONSULTATION' ? (
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-800">Create Prescription</p>
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                      {prescriptionForm.medicines.length} medicines added
+                    </span>
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <input
+                      type="text"
+                      placeholder="Diagnosis"
+                      value={prescriptionForm.diagnosis}
+                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, diagnosis: event.target.value }))}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Temperature (e.g. 101F)"
+                      value={prescriptionForm.temperature}
+                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, temperature: event.target.value }))}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Blood Pressure (e.g. 120/80)"
+                      value={prescriptionForm.bloodPressure}
+                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, bloodPressure: event.target.value }))}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Clinical Notes"
+                      value={prescriptionForm.notes}
+                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, notes: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="mt-3">
+                    <label className="mb-1 block text-xs font-medium text-slate-600">Search Medicine</label>
+                    <input
+                      type="text"
+                      placeholder="Type medicine name (min 2 letters)"
+                      value={medicineSearchText}
+                      onChange={(event) => setMedicineSearchText(event.target.value)}
+                    />
+                    {medicineSearchLoading ? <p className="mt-1 text-xs text-slate-500">Searching...</p> : null}
+                    {!medicineSearchLoading && medicineSearchError ? (
+                      <p className="mt-1 text-xs text-red-500">{medicineSearchError}</p>
+                    ) : null}
+                    {!medicineSearchLoading && !medicineSearchError && medicineSearchResults.length ? (
+                      <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2">
+                        {medicineSearchResults.map((item) => (
+                          <div key={item._id} className="mb-2 rounded-md border border-slate-200 bg-white p-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <p className="text-xs font-semibold text-slate-700">{item.name}</p>
+                                {Array.isArray(item.strength) && item.strength.length ? (
+                                  <p className="mt-1 text-xs text-slate-500">Strengths: {item.strength.slice(0, 6).join(', ')}</p>
+                                ) : null}
+                              </div>
+                              <button type="button" className="secondary" onClick={() => addMedicineToPrescription(item)}>Add</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <input
+                        type="text"
+                        placeholder="Custom medicine name"
+                        value={customMedicineName}
+                        onChange={(event) => setCustomMedicineName(event.target.value)}
+                      />
+                      <button type="button" className="secondary" onClick={addCustomMedicineToPrescription}>Add Custom</button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">Quick Defaults</p>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-slate-600">Frequency</label>
+                        <input value={bulkFrequency} onChange={(event) => setBulkFrequency(event.target.value)} placeholder="1-0-1" />
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {QUICK_FREQUENCY_OPTIONS.map((opt) => (
+                            <button key={`freq-${opt}`} type="button" className="secondary" onClick={() => setBulkFrequency(opt)}>{opt}</button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-slate-600">Duration</label>
+                        <input value={bulkDuration} onChange={(event) => setBulkDuration(event.target.value)} placeholder="5 days" />
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {QUICK_DURATION_OPTIONS.map((opt) => (
+                            <button key={`duration-${opt}`} type="button" className="secondary" onClick={() => setBulkDuration(opt)}>{opt}</button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-slate-600">Instruction</label>
+                        <input value={bulkInstructions} onChange={(event) => setBulkInstructions(event.target.value)} placeholder="After food" />
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {QUICK_INSTRUCTION_OPTIONS.map((opt) => (
+                            <button key={`instr-${opt}`} type="button" className="secondary" onClick={() => setBulkInstructions(opt)}>{opt}</button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex justify-end">
+                      <button type="button" className="secondary" onClick={applyBulkDefaultsToAllMedicines} disabled={!prescriptionForm.medicines.length}>
+                        Apply Defaults To All Medicines
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    {prescriptionForm.medicines.map((med, index) => (
+                      <div key={`${med.medicineId}-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs font-semibold text-slate-700">#{index + 1} {med.name}</p>
+                          <div className="flex flex-wrap gap-1">
+                            <button type="button" className="secondary" onClick={() => duplicatePrescriptionMedicine(index)}>Duplicate</button>
+                            <button type="button" className="secondary" onClick={() => removePrescriptionMedicine(index)}>Remove</button>
+                          </div>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-4">
+                          <input type="text" placeholder="Dosage" value={med.dosage || ''} onChange={(event) => updatePrescriptionMedicine(index, 'dosage', event.target.value)} />
+                          <input type="text" placeholder="Frequency" value={med.frequency || ''} onChange={(event) => updatePrescriptionMedicine(index, 'frequency', event.target.value)} />
+                          <input type="text" placeholder="Duration" value={med.duration || ''} onChange={(event) => updatePrescriptionMedicine(index, 'duration', event.target.value)} />
+                          <input type="text" placeholder="Instructions" value={med.instructions || ''} onChange={(event) => updatePrescriptionMedicine(index, 'instructions', event.target.value)} />
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {QUICK_FREQUENCY_OPTIONS.map((opt) => (
+                            <button key={`med-f-${index}-${opt}`} type="button" className="secondary" onClick={() => updatePrescriptionMedicine(index, 'frequency', opt)}>{opt}</button>
+                          ))}
+                          {QUICK_DURATION_OPTIONS.map((opt) => (
+                            <button key={`med-d-${index}-${opt}`} type="button" className="secondary" onClick={() => updatePrescriptionMedicine(index, 'duration', opt)}>{opt}</button>
+                          ))}
+                          {QUICK_INSTRUCTION_OPTIONS.map((opt) => (
+                            <button key={`med-i-${index}-${opt}`} type="button" className="secondary" onClick={() => updatePrescriptionMedicine(index, 'instructions', opt)}>{opt}</button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-3">
+                    <textarea
+                      rows={3}
+                      placeholder="Doctor remarks"
+                      value={prescriptionForm.remarks}
+                      onChange={(event) => setPrescriptionForm((prev) => ({ ...prev, remarks: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="mt-3 flex justify-end">
+                    <button type="button" onClick={handleGeneratePrescription} disabled={prescriptionSubmitting}>
+                      {prescriptionSubmitting ? 'Generating...' : 'Generate Prescription'}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
         </article>

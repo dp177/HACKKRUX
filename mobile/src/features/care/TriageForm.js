@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
 import { triageChatNext, triageAnalyze } from '../../api';
 import VoiceTriageAgent from '../../components/VoiceTriageAgent';
 import { colors, radii, spacing } from '../../theme/tokens';
@@ -54,6 +55,8 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
   const [recentTrauma, setRecentTrauma] = useState(false);
   const [comorbidities, setComorbidities] = useState([]);
   const [vitals, setVitals] = useState({ hr: '', bp: '', temp: '', o2: '', rr: '' });
+  const [attachment, setAttachment] = useState(null);
+  const [attachmentError, setAttachmentError] = useState('');
 
   const normalizedInputMode = useMemo(() => (String(inputMode).toLowerCase() === 'voice' ? 'voice' : 'text'), [inputMode]);
   const [effectiveInputMode, setEffectiveInputMode] = useState(normalizedInputMode);
@@ -75,6 +78,52 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
 
   function toggleComorbidity(c) {
     setComorbidities((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]));
+  }
+
+  async function handlePickAttachment() {
+    try {
+      setAttachmentError('');
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/pdf',
+          'image/*',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        ],
+        copyToCacheDirectory: true,
+        multiple: false
+      });
+
+      if (result?.canceled) {
+        return;
+      }
+
+      const asset = Array.isArray(result?.assets) ? result.assets[0] : null;
+      if (!asset?.uri) {
+        setAttachmentError('Unable to read selected file. Please try again.');
+        return;
+      }
+
+      const pickedFile = {
+        uri: asset.uri,
+        name: asset.name || `report_${Date.now()}`,
+        type: asset.mimeType || 'application/octet-stream'
+      };
+
+      setAttachment(pickedFile);
+      console.log('[TriageForm] attachment_selected', {
+        debugSessionId,
+        fileName: pickedFile.name,
+        mimeType: pickedFile.type
+      });
+    } catch (error) {
+      setAttachmentError(error?.message || 'Could not open file picker');
+    }
+  }
+
+  function clearAttachment() {
+    setAttachment(null);
+    setAttachmentError('');
   }
 
   async function askNextQuestion(baseHistory) {
@@ -241,10 +290,12 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
         hospitalId: payload.hospital_id,
         inputMode: effectiveInputMode,
         historyLength: payload.conversation_history.length,
+        hasAttachment: Boolean(attachment?.uri),
+        attachmentName: attachment?.name || null,
         hasVitals: Object.values(payload.vitals || {}).some((v) => String(v || '').trim() !== ''),
         comorbidityCount: payload.context?.comorbidities?.length || 0
       });
-      const result = await triageAnalyze(payload, token);
+      const result = await triageAnalyze(payload, token, attachment || null);
       console.log('[TriageForm] analyze_success', {
         debugSessionId,
         durationMs: Date.now() - submitStartedAt,
@@ -376,6 +427,22 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
           <TextInput value={vitals.rr} onChangeText={(t) => setVitals((v) => ({ ...v, rr: t }))} style={styles.inputSmall} placeholder="RR" keyboardType="numeric" />
         </View>
 
+        <Text style={styles.label}>Upload Previous Prescription/Report (Optional)</Text>
+        <TouchableOpacity style={styles.secondaryBtn} onPress={handlePickAttachment}>
+          <Text style={styles.secondaryBtnText}>{attachment?.name ? 'Change File' : 'Choose File'}</Text>
+        </TouchableOpacity>
+
+        {attachment?.name ? (
+          <View style={styles.attachmentRow}>
+            <Text style={styles.attachmentText} numberOfLines={2}>{attachment.name}</Text>
+            <TouchableOpacity onPress={clearAttachment}>
+              <Text style={styles.removeText}>Remove</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        {attachmentError ? <Text style={styles.errorText}>{attachmentError}</Text> : null}
+
         <TouchableOpacity style={styles.btn} onPress={handleContextSubmit}>
           <Text style={styles.btnText}>{mode === 'queue' ? 'Submit & Join Queue' : 'Submit & Continue Booking'}</Text>
         </TouchableOpacity>
@@ -435,6 +502,11 @@ const styles = StyleSheet.create({
   switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm },
   btn: { marginTop: spacing.lg, backgroundColor: colors.primary, borderRadius: radii.md, alignItems: 'center', paddingVertical: 14 },
   btnText: { color: '#fff', fontFamily: 'Inter_600SemiBold', fontSize: 15 },
+  secondaryBtn: { marginTop: spacing.sm, borderWidth: 1, borderColor: colors.primary, borderRadius: radii.md, alignItems: 'center', paddingVertical: 11, backgroundColor: '#fff' },
+  secondaryBtnText: { color: colors.primaryDark, fontFamily: 'Inter_600SemiBold', fontSize: 14 },
+  attachmentRow: { marginTop: 8, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: spacing.sm },
+  attachmentText: { flex: 1, color: colors.text, fontFamily: 'Inter_400Regular', fontSize: 12 },
+  removeText: { color: colors.danger, fontFamily: 'Inter_600SemiBold', fontSize: 12 },
   errorText: { color: colors.danger, fontFamily: 'Inter_400Regular', fontSize: 12, marginTop: 4 },
   chatHistory: { marginBottom: spacing.md, gap: spacing.sm },
   bubble: { borderRadius: radii.md, paddingHorizontal: 12, paddingVertical: 8, maxWidth: '85%', marginVertical: 2 },
