@@ -137,6 +137,13 @@ export async function callNextPatient(doctorId, token) {
   });
 }
 
+export async function endConsultationPatient(doctorId, token) {
+  return request(`/doctors/${doctorId}/end-consultation`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export async function getDoctorProfile(token) {
   return request('/auth/me/doctor', {
     headers: { Authorization: `Bearer ${token}` }

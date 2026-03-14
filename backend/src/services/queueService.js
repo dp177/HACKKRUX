@@ -158,13 +158,20 @@ async function emitDepartmentQueueSnapshot(departmentId) {
   const io = getSocketServer();
   if (!io || !departmentId) return;
 
-  const entries = await Queue.find({ departmentId, status: 'WAITING' })
+  const active = await Queue.findOne({ departmentId, status: 'IN_CONSULTATION' })
+    .populate('patientId', 'firstName lastName')
+    .sort({ startedAt: 1, calledAt: 1, updatedAt: 1 });
+
+  const waiting = await Queue.find({ departmentId, status: 'WAITING' })
     .populate('patientId', 'firstName lastName')
     .sort({ queuePosition: 1 });
 
+  const entries = active ? [active, ...waiting] : waiting;
+
   io.to(`department:${String(departmentId)}`).emit('queue:department:update', {
     departmentId: String(departmentId),
-    waitingCount: entries.length,
+    waitingCount: waiting.length,
+    activeConsultation: Boolean(active),
     patients: entries.map((entry) => ({
       queueEntryId: String(entry._id),
       patientId: String(entry.patientId?._id || entry.patientId),
@@ -180,7 +187,8 @@ async function emitDepartmentQueueSnapshot(departmentId) {
       wait_minutes: entry.estimatedWaitMinutes,
       waited_minutes: entry.waitTimeMinutes,
       department: entry.departmentName || null,
-      chief_complaint: 'General consultation'
+      chief_complaint: 'General consultation',
+      status: entry.status
     }))
   });
 }
@@ -204,13 +212,41 @@ async function recalculateDepartmentQueue(departmentId) {
     }
   }
 
+  const active = await Queue.findOne({ departmentId, status: 'IN_CONSULTATION' }).sort({ startedAt: 1, calledAt: 1, updatedAt: 1 });
   const waiting = await Queue.find({ departmentId, status: 'WAITING' }).sort({ priorityScore: -1, joinedAt: 1, createdAt: 1 });
+
+  const activeOffset = active ? 1 : 0;
+
+  if (active) {
+    const activeWaited = active?.joinedAt
+      ? Math.max(0, Math.floor((Date.now() - new Date(active.joinedAt).getTime()) / 60000))
+      : 0;
+
+    if (
+      active.queuePosition !== 0
+      || active.patientsAhead !== 0
+      || active.estimatedWaitMinutes !== 0
+      || active.waitTimeMinutes !== activeWaited
+      || (departmentName && active.departmentName !== departmentName)
+      || (hospitalName && active.hospitalName !== hospitalName)
+    ) {
+      active.queuePosition = 0;
+      active.patientsAhead = 0;
+      active.estimatedWaitMinutes = 0;
+      active.waitTimeMinutes = activeWaited;
+      if (departmentName) active.departmentName = departmentName;
+      if (hospitalName) active.hospitalName = hospitalName;
+      await active.save();
+    }
+
+    await emitQueueUpdate(active, avgConsultationMinutes);
+  }
 
   for (let i = 0; i < waiting.length; i += 1) {
     const entry = waiting[i];
-    const nextPosition = i + 1;
-    const nextPatientsAhead = i;
-    const nextEstimated = i * avgConsultationMinutes;
+    const nextPosition = i + 1 + activeOffset;
+    const nextPatientsAhead = i + activeOffset;
+    const nextEstimated = nextPatientsAhead * avgConsultationMinutes;
     const nextWaited = entry?.joinedAt
       ? Math.max(0, Math.floor((Date.now() - new Date(entry.joinedAt).getTime()) / 60000))
       : 0;
@@ -238,6 +274,7 @@ async function recalculateDepartmentQueue(departmentId) {
   await emitDepartmentQueueSnapshot(departmentId);
   console.log('[queueService] recalculate_done', {
     departmentId: String(departmentId),
+    activeConsultation: Boolean(active),
     waitingCount: waiting.length,
     avgConsultationMinutes,
     durationMs: Date.now() - startedAt
@@ -316,10 +353,12 @@ async function getPatientQueueStatus(patientId) {
 
   let entry = await Queue.findOne({ patientId, status: 'WAITING' }).sort({ updatedAt: -1 });
 
-  // Fallback: if patient has already been called, return IN_CONSULTATION state
-  // so mobile can still show "it's your turn" even if socket was missed.
   if (!entry) {
     entry = await Queue.findOne({ patientId, status: 'IN_CONSULTATION' }).sort({ calledAt: -1, updatedAt: -1 });
+  }
+
+  if (!entry) {
+    entry = await Queue.findOne({ patientId, status: 'COMPLETED' }).sort({ completedAt: -1, updatedAt: -1 });
   }
 
   if (!entry) {
@@ -337,6 +376,11 @@ async function getPatientQueueStatus(patientId) {
     payload.message = `${entry.calledByDoctorName || 'Doctor'} has called you. Please reach consultation now.`;
   }
 
+  if (entry.status === 'COMPLETED') {
+    payload.notificationType = 'CONSULTATION_COMPLETED';
+    payload.message = 'Your consultation has been completed. We hope you feel better soon! Thank you for visiting.';
+  }
+
   console.log('[queueService] patient_status_done', {
     patientId: String(patientId),
     departmentId: entry.departmentId ? String(entry.departmentId) : null,
@@ -348,7 +392,7 @@ async function getPatientQueueStatus(patientId) {
 
 async function getDepartmentQueueForDoctorDepartment(departmentId) {
   if (!departmentId) return [];
-  return Queue.find({ departmentId, status: 'WAITING' })
+  return Queue.find({ departmentId, status: { $in: ['IN_CONSULTATION', 'WAITING'] } })
     .populate('patientId', 'firstName lastName dateOfBirth phone')
     .populate('triageRecordId', 'chiefComplaint triageNotes totalRiskScore priorityLevel')
     .sort({ queuePosition: 1 });
@@ -363,8 +407,42 @@ async function callNextFromDepartmentQueue(departmentId, options = {}) {
   const startedAt = Date.now();
   console.log('[queueService] call_next_start', { departmentId: String(departmentId) });
 
-  const nextEntry = await Queue.findOne({ departmentId, status: 'WAITING' }).sort({ queuePosition: 1 });
+  const io = getSocketServer();
+
+  const activeEntry = await Queue.findOne({ departmentId, status: 'IN_CONSULTATION' }).sort({ startedAt: 1, calledAt: 1, updatedAt: 1 });
+  if (activeEntry) {
+    activeEntry.status = 'COMPLETED';
+    activeEntry.completedAt = new Date();
+    await activeEntry.save();
+
+    const endPayload = {
+      event: 'consultation:end',
+      patientId: String(activeEntry.patientId),
+      queueEntryId: String(activeEntry._id),
+      status: 'COMPLETED',
+      completedAt: activeEntry.completedAt,
+      message: 'Your consultation has been completed. We hope you feel better soon! Thank you for visiting.'
+    };
+
+    if (io) {
+      io.to(`patient:${String(activeEntry.patientId)}`).emit('consultation:end', endPayload);
+      io.to(`patient:${String(activeEntry.patientId)}`).emit('queue:update', endPayload);
+    }
+
+    await sendPatientPushNotification(
+      activeEntry.patientId,
+      'Consultation completed',
+      'Your consultation has been completed. We hope you feel better soon!',
+      {
+        type: 'CONSULTATION_COMPLETED',
+        queueEntryId: String(activeEntry._id)
+      }
+    );
+  }
+
+  const nextEntry = await Queue.findOne({ departmentId, status: 'WAITING' }).sort({ priorityScore: -1, joinedAt: 1, createdAt: 1 });
   if (!nextEntry) {
+    await recalculateDepartmentQueue(departmentId);
     console.log('[queueService] call_next_empty', {
       departmentId: String(departmentId),
       durationMs: Date.now() - startedAt
@@ -379,9 +457,9 @@ async function callNextFromDepartmentQueue(departmentId, options = {}) {
   nextEntry.startedAt = new Date();
   await nextEntry.save();
 
-  const io = getSocketServer();
   if (io) {
-    const calledPayload = {
+    const startPayload = {
+      event: 'consultation:start',
       patientId: String(nextEntry.patientId),
       queueEntryId: String(nextEntry._id),
       status: nextEntry.status,
@@ -392,8 +470,9 @@ async function callNextFromDepartmentQueue(departmentId, options = {}) {
       message: `${doctorName} has called you. Please reach consultation now.`
     };
 
-    io.to(`patient:${String(nextEntry.patientId)}`).emit('queue:update', calledPayload);
-    io.to(`patient:${String(nextEntry.patientId)}`).emit('patient:called', calledPayload);
+    io.to(`patient:${String(nextEntry.patientId)}`).emit('consultation:start', startPayload);
+    io.to(`patient:${String(nextEntry.patientId)}`).emit('queue:update', startPayload);
+    io.to(`patient:${String(nextEntry.patientId)}`).emit('patient:called', startPayload);
   }
 
   await sendPatientPushNotification(
@@ -416,6 +495,45 @@ async function callNextFromDepartmentQueue(departmentId, options = {}) {
     durationMs: Date.now() - startedAt
   });
   return nextEntry;
+}
+
+async function endActiveConsultation(departmentId) {
+  if (!departmentId) return null;
+
+  const activeEntry = await Queue.findOne({ departmentId, status: 'IN_CONSULTATION' }).sort({ startedAt: 1, calledAt: 1, updatedAt: 1 });
+  if (!activeEntry) return null;
+
+  activeEntry.status = 'COMPLETED';
+  activeEntry.completedAt = new Date();
+  await activeEntry.save();
+
+  const io = getSocketServer();
+  const payload = {
+    event: 'consultation:end',
+    patientId: String(activeEntry.patientId),
+    queueEntryId: String(activeEntry._id),
+    status: 'COMPLETED',
+    completedAt: activeEntry.completedAt,
+    message: 'Your consultation has been completed. We hope you feel better soon! Thank you for visiting.'
+  };
+
+  if (io) {
+    io.to(`patient:${String(activeEntry.patientId)}`).emit('consultation:end', payload);
+    io.to(`patient:${String(activeEntry.patientId)}`).emit('queue:update', payload);
+  }
+
+  await sendPatientPushNotification(
+    activeEntry.patientId,
+    'Consultation completed',
+    'Your consultation has been completed. We hope you feel better soon!',
+    {
+      type: 'CONSULTATION_COMPLETED',
+      queueEntryId: String(activeEntry._id)
+    }
+  );
+
+  await recalculateDepartmentQueue(departmentId);
+  return activeEntry;
 }
 
 async function runRescoreForAllDepartments() {
@@ -543,6 +661,7 @@ module.exports = {
   getPatientQueueStatus,
   getDepartmentQueueForDoctorDepartment,
   callNextFromDepartmentQueue,
+  endActiveConsultation,
   runRescoreForAllDepartments,
   mapUrgencyToPriorityScore,
   normalizeUrgency

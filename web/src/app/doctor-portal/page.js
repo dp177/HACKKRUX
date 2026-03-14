@@ -8,6 +8,7 @@ import {
   addDoctorSlot,
   addDoctorBreak,
   callNextPatient,
+  endConsultationPatient,
   deleteDoctorBreak,
   deleteDoctorScheduleForDate,
   deleteDoctorSlot,
@@ -76,13 +77,19 @@ function queueRowFromRaw(item, index) {
 
   const score = Number(item.total_risk_score || item.totalRiskScore || item.riskScore || item.score || 0);
   const priority = normalizePriority(item.urgency_level || item.urgencyLevel || item.priority_level || item.priorityLevel || item.priority || (score >= 85 ? 'critical' : score >= 65 ? 'high' : score >= 40 ? 'medium' : 'low'));
+  const rawStatus = String(item.status || '').toUpperCase();
+  const status = ['IN_CONSULTATION', 'WAITING', 'COMPLETED', 'CANCELLED'].includes(rawStatus) ? rawStatus : 'WAITING';
+  const queuePosition = Number(item.queue_position ?? item.queuePosition ?? index + 1);
   return {
     id: patientId || item.id || `queue-${index}`,
     name: item.patient_name || item.patientName || item.name || `Patient ${index + 1}`,
     symptoms: item.chief_complaint || item.symptoms || 'Symptoms pending',
     department: item.department || item.ai_analysis?.department || 'General',
     urgency: priority,
+    status,
     score,
+    queuePosition,
+    patientsAhead: Number(item.patientsAhead ?? item.patients_ahead ?? Math.max(0, queuePosition - 1)),
     waitTime: item.wait_time || `${item.estimated_wait_minutes ?? item.estimatedWaitMinutes ?? item.wait_minutes ?? 0} min`,
     waitedTime: `${item.waited_minutes ?? 0} min`,
     explainabilitySummary: item.explainability_summary || item.ai_analysis?.summary || '',
@@ -165,7 +172,18 @@ export default function DoctorPortalPage() {
   const queue = useMemo(() => {
     const patients = dashboard?.currentQueue?.patients || [];
     if (!patients.length) return [];
-    return patients.map(queueRowFromRaw).sort((a, b) => b.score - a.score);
+    const statusRank = (status) => (status === 'IN_CONSULTATION' ? 0 : status === 'WAITING' ? 1 : status === 'COMPLETED' ? 2 : 3);
+    return patients
+      .map(queueRowFromRaw)
+      .sort((a, b) => {
+        if (statusRank(a.status) !== statusRank(b.status)) {
+          return statusRank(a.status) - statusRank(b.status);
+        }
+        if (a.queuePosition !== b.queuePosition) {
+          return a.queuePosition - b.queuePosition;
+        }
+        return b.score - a.score;
+      });
   }, [dashboard]);
 
   const appointments = useMemo(() => {
@@ -370,6 +388,18 @@ export default function DoctorPortalPage() {
     }
   }
 
+  async function handleEndConsultation() {
+    if (!doctor?.id || !token) return;
+
+    try {
+      const response = await endConsultationPatient(doctor.id, token);
+      toast.success(response.message || 'Consultation ended');
+      loadPortalData(true);
+    } catch (error) {
+      toast.error(error.message || 'Unable to end consultation');
+    }
+  }
+
   function handleLogout() {
     localStorage.removeItem('doctorPortalToken');
     localStorage.removeItem('doctorPortalDoctor');
@@ -500,6 +530,7 @@ export default function DoctorPortalPage() {
             <h2 className="text-xl font-semibold text-slate-900">Patient Queue</h2>
             <div className="flex items-center gap-2">
               <button type="button" onClick={handleCallNextPatient}>Call Top Patient</button>
+              <button type="button" className="secondary" onClick={handleEndConsultation}>End Consultation</button>
               <button type="button" className="secondary" onClick={() => loadPortalData(false)}>Refresh Queue</button>
             </div>
           </div>
@@ -511,6 +542,7 @@ export default function DoctorPortalPage() {
                   <th className="px-2 py-1">Patient</th>
                   <th className="px-2 py-1">Symptoms</th>
                   <th className="px-2 py-1">Department</th>
+                  <th className="px-2 py-1">Status</th>
                   <th className="px-2 py-1">Urgency</th>
                   <th className="px-2 py-1">Score</th>
                   <th className="px-2 py-1">Waited</th>
@@ -520,7 +552,7 @@ export default function DoctorPortalPage() {
               <tbody>
                 {!queue.length ? (
                   <tr>
-                    <td className="px-2 py-3 text-slate-500" colSpan={7}>No patients in queue.</td>
+                    <td className="px-2 py-3 text-slate-500" colSpan={8}>No patients in queue.</td>
                   </tr>
                 ) : null}
                 {queue.map((item) => (
@@ -532,6 +564,7 @@ export default function DoctorPortalPage() {
                     <td className="px-2 py-2 font-semibold text-slate-800">{item.name}</td>
                     <td className="px-2 py-2 text-slate-600">{item.symptoms}</td>
                     <td className="px-2 py-2 text-slate-700">{item.department}</td>
+                    <td className="px-2 py-2 text-slate-700">{item.status === 'IN_CONSULTATION' ? 'IN CONSULTATION' : item.status}</td>
                     <td className="px-2 py-2">{priorityBadge(item.urgency)}</td>
                     <td className="px-2 py-2 text-slate-700">{item.score}</td>
                     <td className="px-2 py-2 text-slate-700">{item.waitedTime}</td>

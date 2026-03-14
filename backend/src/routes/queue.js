@@ -5,7 +5,8 @@ const { authenticateAny, authenticatePatient, authenticateDoctor } = require('..
 const {
   getPatientQueueStatus,
   recalculateDepartmentQueue,
-  callNextFromDepartmentQueue
+  callNextFromDepartmentQueue,
+  endActiveConsultation
 } = require('../services/queueService');
 
 router.use((req, res, next) => {
@@ -85,18 +86,18 @@ router.get('/department/:departmentId', authenticateDoctor, async (req, res) => 
     });
     await recalculateDepartmentQueue(departmentId);
 
-    const waiting = await Queue.find({ departmentId, status: 'WAITING' })
+    const entries = await Queue.find({ departmentId, status: { $in: ['IN_CONSULTATION', 'WAITING'] } })
       .populate('patientId', 'firstName lastName')
       .sort({ queuePosition: 1 });
 
     const payload = {
       departmentId,
-      patients: waiting.map((row) => ({
+      patients: entries.map((row) => ({
         queueEntryId: row.id,
         patientId: row.patientId?._id || row.patientId,
         patientName: row.patientId ? `${row.patientId.firstName} ${row.patientId.lastName}` : 'Patient',
         position: row.queuePosition,
-        patientsAhead: Math.max(0, Number(row.queuePosition || 1) - 1),
+        patientsAhead: Number(row.patientsAhead || 0),
         estimatedWaitMinutes: row.estimatedWaitMinutes,
         priorityLevel: row.priorityLevel,
         riskScore: row.riskScore,
@@ -107,7 +108,7 @@ router.get('/department/:departmentId', authenticateDoctor, async (req, res) => 
     console.log('[QueueRoute] department_queue_success', {
       url: req.originalUrl,
       departmentId,
-      waitingCount: payload.patients.length
+      waitingCount: payload.patients.filter((row) => row.status === 'WAITING').length
     });
 
     return res.json(payload);
@@ -130,7 +131,10 @@ router.post('/doctor/call-next', authenticateDoctor, async (req, res) => {
       return res.status(400).json({ error: 'Doctor has no department assigned' });
     }
 
-    const queueEntry = await callNextFromDepartmentQueue(departmentId);
+    const queueEntry = await callNextFromDepartmentQueue(departmentId, {
+      doctorId: req.userId,
+      doctorName: req.doctor ? `Dr. ${req.doctor.firstName} ${req.doctor.lastName}` : 'Doctor'
+    });
     if (!queueEntry) {
       console.log('[QueueRoute] call_next_empty', { url: req.originalUrl, departmentId: String(departmentId) });
       return res.json({ message: 'No patients waiting in queue' });
@@ -151,6 +155,58 @@ router.post('/doctor/call-next', authenticateDoctor, async (req, res) => {
   } catch (error) {
     console.error('queue/doctor/call-next error:', { url: req.originalUrl, error: error?.message || error });
     return res.status(500).json({ error: 'Failed to call next patient' });
+  }
+});
+
+router.post('/call-next', authenticateDoctor, async (req, res) => {
+  try {
+    const departmentId = req.doctor?.departmentId;
+    if (!departmentId) {
+      return res.status(400).json({ error: 'Doctor has no department assigned' });
+    }
+
+    const queueEntry = await callNextFromDepartmentQueue(departmentId, {
+      doctorId: req.userId,
+      doctorName: req.doctor ? `Dr. ${req.doctor.firstName} ${req.doctor.lastName}` : 'Doctor'
+    });
+
+    if (!queueEntry) {
+      return res.json({ message: 'No patients waiting in queue' });
+    }
+
+    return res.json({
+      message: 'Next patient moved to consultation',
+      queueEntryId: queueEntry.id,
+      patientId: queueEntry.patientId,
+      status: queueEntry.status
+    });
+  } catch (error) {
+    console.error('queue/call-next error:', { url: req.originalUrl, error: error?.message || error });
+    return res.status(500).json({ error: 'Failed to call next patient' });
+  }
+});
+
+router.post('/end-consultation', authenticateDoctor, async (req, res) => {
+  try {
+    const departmentId = req.doctor?.departmentId;
+    if (!departmentId) {
+      return res.status(400).json({ error: 'Doctor has no department assigned' });
+    }
+
+    const completedEntry = await endActiveConsultation(departmentId);
+    if (!completedEntry) {
+      return res.json({ message: 'No active consultation to end' });
+    }
+
+    return res.json({
+      message: 'Consultation ended successfully',
+      queueEntryId: completedEntry.id,
+      patientId: completedEntry.patientId,
+      status: completedEntry.status
+    });
+  } catch (error) {
+    console.error('queue/end-consultation error:', { url: req.originalUrl, error: error?.message || error });
+    return res.status(500).json({ error: 'Failed to end consultation' });
   }
 });
 

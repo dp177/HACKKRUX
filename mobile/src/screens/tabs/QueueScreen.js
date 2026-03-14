@@ -20,6 +20,7 @@ export default function QueueScreen() {
   const [loading, setLoading] = useState(true);
   const [queueData, setQueueData] = useState(null);
   const lastCallAlertKeyRef = useRef('');
+  const lastCompletionAlertKeyRef = useRef('');
 
   useEffect(() => {
     let alive = true;
@@ -45,7 +46,9 @@ export default function QueueScreen() {
           hospitalName: status?.hospitalName || activeQueue?.hospitalName || null,
           departmentId: status?.departmentId || activeQueue?.departmentId,
           hospitalId: status?.hospitalId || activeQueue?.hospitalId,
-          patientId: status?.patientId || activeQueue?.patientId || user?.id || user?._id || null
+          patientId: status?.patientId || activeQueue?.patientId || user?.id || user?._id || null,
+          status: status?.status || activeQueue?.status || 'WAITING',
+          message: status?.message || activeQueue?.message || null
         };
 
         if (status?.status === 'IN_CONSULTATION' || status?.notificationType === 'PATIENT_CALLED') {
@@ -55,10 +58,14 @@ export default function QueueScreen() {
             const doctorName = status?.doctorName || 'Doctor';
             Alert.alert('Called By Doctor', status?.message || `${doctorName} has called you. Please reach consultation now.`);
           }
+        }
 
-          setQueueData(null);
-          setActiveQueue(null);
-          return;
+        if (status?.status === 'COMPLETED' || status?.notificationType === 'CONSULTATION_COMPLETED') {
+          const completionKey = String(status?.completedAt || status?.queueEntryId || 'completed');
+          if (lastCompletionAlertKeyRef.current !== completionKey) {
+            lastCompletionAlertKeyRef.current = completionKey;
+            Alert.alert('Consultation Completed', status?.message || 'Your consultation has been completed. We hope you feel better soon! Thank you for visiting.');
+          }
         }
 
         setQueueData(merged);
@@ -91,7 +98,43 @@ export default function QueueScreen() {
 
             const doctorName = payload?.doctorName || 'Doctor';
             Alert.alert('Called By Doctor', payload.message || `${doctorName} has called you. Please reach consultation now.`);
-            setQueueData(null);
+            setQueueData((prev) => ({
+              ...(prev || {}),
+              status: 'IN_CONSULTATION',
+              message: payload?.message || `${doctorName} has called you. Please reach consultation now.`
+            }));
+          });
+
+          socket.on('consultation:start', (payload) => {
+            if (!alive || !payload) return;
+
+            const currentPatientId = String(user?.id || user?._id || activeQueue?.patientId || status?.patientId || '');
+            if (currentPatientId && String(payload.patientId || '') !== currentPatientId) {
+              return;
+            }
+
+            Alert.alert('Doctor is ready for you', payload.message || 'Please proceed to consultation room.');
+            setQueueData((prev) => ({
+              ...(prev || {}),
+              status: 'IN_CONSULTATION',
+              message: payload?.message || 'Please proceed to consultation room.'
+            }));
+          });
+
+          socket.on('consultation:end', (payload) => {
+            if (!alive || !payload) return;
+
+            const currentPatientId = String(user?.id || user?._id || activeQueue?.patientId || status?.patientId || '');
+            if (currentPatientId && String(payload.patientId || '') !== currentPatientId) {
+              return;
+            }
+
+            Alert.alert('Consultation Completed', payload.message || 'Your consultation has been completed. We hope you feel better soon! Thank you for visiting.');
+            setQueueData((prev) => ({
+              ...(prev || {}),
+              status: 'COMPLETED',
+              message: payload?.message || 'Your consultation has been completed. We hope you feel better soon! Thank you for visiting.'
+            }));
             setActiveQueue(null);
           });
 
@@ -108,7 +151,21 @@ export default function QueueScreen() {
             if (payload.notificationType === 'PATIENT_CALLED' || payload.status === 'IN_CONSULTATION') {
               const doctorName = payload?.doctorName || 'Doctor';
               Alert.alert('Called By Doctor', payload.message || `${doctorName} has called you. Please reach consultation now.`);
-              setQueueData(null);
+              setQueueData((prev) => ({
+                ...(prev || {}),
+                ...payload,
+                status: 'IN_CONSULTATION'
+              }));
+              return;
+            }
+
+            if (payload.notificationType === 'CONSULTATION_COMPLETED' || payload.status === 'COMPLETED') {
+              Alert.alert('Consultation Completed', payload.message || 'Your consultation has been completed. We hope you feel better soon! Thank you for visiting.');
+              setQueueData((prev) => ({
+                ...(prev || {}),
+                ...payload,
+                status: 'COMPLETED'
+              }));
               setActiveQueue(null);
               return;
             }
@@ -156,23 +213,40 @@ export default function QueueScreen() {
         <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 40 }} />
       ) : queueData ? (
         <View style={styles.card}>
-          <Text style={styles.label}>Hospital</Text>
-          <Text style={styles.value}>{queueData.hospitalName || 'Not available'}</Text>
-
           <Text style={styles.label}>Department</Text>
           <Text style={styles.value}>{queueData.departmentName || 'Not available'}</Text>
 
-          <Text style={styles.label}>Queue Position</Text>
-          <Text style={styles.value}>{queueData.tokenNumber ?? queueData.queuePosition ?? '-'}</Text>
+          {String(queueData.status || 'WAITING').toUpperCase() === 'WAITING' ? (
+            <>
+              <Text style={styles.label}>Token Number</Text>
+              <Text style={styles.value}>#{queueData.tokenNumber ?? queueData.queuePosition ?? '-'}</Text>
 
-          <Text style={styles.label}>Patients Ahead</Text>
-          <Text style={styles.value}>{queueData.patientsAhead ?? '-'}</Text>
+              <Text style={styles.label}>Patients Ahead</Text>
+              <Text style={styles.value}>{queueData.patientsAhead ?? '-'}</Text>
 
-          <Text style={styles.label}>Estimated Wait</Text>
-          <Text style={styles.value}>{queueData.estimatedWaitMinutes != null ? `${queueData.estimatedWaitMinutes} min` : '-'}</Text>
+              <Text style={styles.label}>Estimated Wait</Text>
+              <Text style={styles.value}>{queueData.estimatedWaitMinutes != null ? `${queueData.estimatedWaitMinutes} min` : '-'}</Text>
 
-          <Text style={styles.label}>Waited Time</Text>
-          <Text style={styles.value}>{queueData.waitTimeMinutes != null ? `${queueData.waitTimeMinutes} min` : '-'}</Text>
+              <Text style={styles.label}>Status</Text>
+              <Text style={styles.value}>Waiting in queue</Text>
+            </>
+          ) : null}
+
+          {String(queueData.status || '').toUpperCase() === 'IN_CONSULTATION' ? (
+            <>
+              <Text style={styles.label}>Status</Text>
+              <Text style={styles.value}>Doctor is ready for you</Text>
+              <Text style={styles.value}>Please proceed to consultation room.</Text>
+            </>
+          ) : null}
+
+          {String(queueData.status || '').toUpperCase() === 'COMPLETED' ? (
+            <>
+              <Text style={styles.label}>Status</Text>
+              <Text style={styles.value}>Your consultation has been completed.</Text>
+              <Text style={styles.value}>We hope you feel better soon! Thank you for visiting.</Text>
+            </>
+          ) : null}
         </View>
       ) : (
         <View style={styles.emptyCard}>

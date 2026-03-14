@@ -21,7 +21,7 @@ const { authenticateDoctor } = require('../middleware/auth');
 const axios = require('axios');
 const { assertWithinNextWeek, generateSlots, overlaps, parseMinutes } = require('../utils/scheduling');
 const { getSocketServer } = require('../utils/socketServer');
-const { callNextFromDepartmentQueue, recalculateDepartmentQueue } = require('../services/queueService');
+const { callNextFromDepartmentQueue, endActiveConsultation, recalculateDepartmentQueue } = require('../services/queueService');
 
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001';
 
@@ -146,13 +146,14 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
     try {
       if (doctor.departmentId) {
         await recalculateDepartmentQueue(doctor.departmentId);
-        const waiting = await Queue.find({ departmentId: doctor.departmentId, status: 'WAITING' })
+        const waiting = await Queue.find({ departmentId: doctor.departmentId, status: { $in: ['IN_CONSULTATION', 'WAITING'] } })
           .populate('patientId', 'firstName lastName')
           .populate('triageRecordId', 'chiefComplaint triageNotes historicalSummary redFlags symptomCategory recommendedSpecialty extractedSymptoms extractedComorbidities onsetType aiSeverity aiAnalysis analyzeOutput')
           .sort({ queuePosition: 1 });
 
-        const avgWait = waiting.length
-          ? Math.round(waiting.reduce((sum, row) => sum + Number(row.estimatedWaitMinutes || 0), 0) / waiting.length)
+        const onlyWaiting = waiting.filter((row) => row.status === 'WAITING');
+        const avgWait = onlyWaiting.length
+          ? Math.round(onlyWaiting.reduce((sum, row) => sum + Number(row.estimatedWaitMinutes || 0), 0) / onlyWaiting.length)
           : 0;
 
         queueData = {
@@ -207,12 +208,14 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
               estimated_wait_minutes: row.estimatedWaitMinutes,
               waited_minutes: row.waitTimeMinutes,
               queue_position: row.queuePosition,
+              status: row.status,
               ai_analysis: rawOutput?.ai_analysis || fallbackAi,
               analysis_output: rawOutput
             };
           }),
           statistics: {
-            waiting_count: waiting.length,
+            waiting_count: onlyWaiting.length,
+            active_consultation: waiting.some((row) => row.status === 'IN_CONSULTATION'),
             avg_wait_minutes: avgWait
           }
         };
@@ -572,6 +575,36 @@ router.post('/:doctorId/call-next', authenticateDoctor, async (req, res) => {
   } catch (error) {
     console.error('Error calling next patient:', error);
     res.status(500).json({ error: 'Failed to call next patient' });
+  }
+});
+
+router.post('/:doctorId/end-consultation', authenticateDoctor, async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    if (!ensureDoctorAccess(req, doctorId)) {
+      return res.status(403).json({ error: 'You can only end consultation for your own queue' });
+    }
+
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+
+    const completedEntry = await endActiveConsultation(doctor.departmentId);
+    if (!completedEntry) {
+      return res.json({ message: 'No active consultation to end' });
+    }
+
+    const patient = await Patient.findById(completedEntry.patientId);
+    return res.json({
+      message: `Consultation completed for ${patient ? `${patient.firstName} ${patient.lastName}` : 'patient'}`,
+      queueEntryId: completedEntry.id,
+      patientId: completedEntry.patientId,
+      status: completedEntry.status
+    });
+  } catch (error) {
+    console.error('Error ending consultation:', error);
+    return res.status(500).json({ error: 'Failed to end consultation' });
   }
 });
 

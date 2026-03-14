@@ -376,9 +376,16 @@ async function sendAssistant(conversation, res, message, traceId = null) {
     textPreview: String(message || '').slice(0, 120)
   });
 
+  // --- NEW: Translate output to the user's detected language ---
+  const targetLang = conversation.collectedData?.language || 'English';
+  const finalMessage = await translateForUser(message, targetLang);
+
   // Twilio expects a quick webhook response; send first, then persist in background.
-  const xml = twimlMessage(message);
+  const xml = twimlMessage(finalMessage);
   res.type('text/xml').send(xml);
+
+  // Update this to save finalMessage instead of message so history matches
+  appendMessage(conversation, 'assistant', finalMessage);
 
   logEvent('info', 'twiml_response_sent', {
     traceId: effectiveTraceId,
@@ -443,8 +450,18 @@ router.post('/whatsapp-booking', async (req, res) => {
   const requestStartedAt = Date.now();
   const senderRaw = req.body?.From;
   const bodyRaw = req.body?.Body;
+  const mediaUrl = req.body?.NumMedia > 0 ? req.body?.MediaUrl0 : null;
+  const mimeType = req.body?.NumMedia > 0 ? req.body?.MediaContentType0 : null;
   const senderId = normalizePhone(senderRaw);
-  const userMsg = String(bodyRaw || '').trim();
+
+  // --- NEW: Process Audio & Translate to English for internal logic ---
+  const { text: translatedUserMsg, language: detectedLang } = await traceStage(
+    'process_media_and_translate',
+    () => processIncomingMediaOrText(bodyRaw, mediaUrl, mimeType)
+  );
+
+  // From here on, your Node backend just interacts with the translated English text
+  const userMsg = translatedUserMsg.trim();
   const command = normalizeCommand(userMsg);
 
   const longRunningTimer = setTimeout(() => {
@@ -562,9 +579,10 @@ router.post('/whatsapp-booking', async (req, res) => {
         patientId: existingPatient?._id,
         status: 'active',
         step: isExistingPatient ? 'choose_hospital' : 'collect_name',
-        collectedData: isExistingPatient
-          ? { patientName: `${existingPatient.firstName || ''} ${existingPatient.lastName || ''}`.trim() }
-          : {},
+        collectedData: {
+          language: detectedLang, // <--- ADD THIS
+          ...(isExistingPatient ? { patientName: `${existingPatient.firstName || ''} ${existingPatient.lastName || ''}`.trim() } : {})
+        },
         options: isExistingPatient ? { hospitals: optionHospitals } : {},
         aiPendingQuestions: [],
         messages: []
@@ -595,7 +613,10 @@ router.post('/whatsapp-booking', async (req, res) => {
         'Namaste! Welcome to Jeeva.\nPlease reply with your full name to continue booking.\n\n(Reply START or MENU anytime to restart)'
       );
     }
-
+    // Update language dynamically if they switch languages mid-conversation
+    if (conversation) {
+      setCollected(conversation, 'language', detectedLang);
+    }
     if (!userMsg) {
       return sendAssistant(conversation, res, 'Please send a number from the menu, or reply MENU to restart.');
     }
@@ -1073,5 +1094,88 @@ router.get('/whatsapp-booking/history/:senderId', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch WhatsApp history' });
   }
 });
+
+// --- NEW: Audio Processing & Incoming Translation ---
+async function processIncomingMediaOrText(bodyRaw, mediaUrl, mimeType) {
+  if (!mediaUrl && !bodyRaw) return { text: '', language: 'English' };
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  let parts = [];
+
+  // 1. If user sent a WhatsApp Voice Note, fetch it and pass to Gemini
+  if (mediaUrl) {
+     const audioRes = await fetch(mediaUrl);
+     const arrayBuffer = await audioRes.arrayBuffer();
+     const base64Audio = Buffer.from(arrayBuffer).toString('base64');
+     parts.push({
+       inlineData: {
+         mimeType: mimeType || 'audio/ogg',
+         data: base64Audio
+       }
+     });
+  }
+
+  if (bodyRaw) {
+     parts.push({ text: bodyRaw });
+  }
+
+  // 2. Force Gemini to standardize everything to English for your backend
+  const prompt = `You are a medical assistant translator for a WhatsApp bot.
+  1. If audio is provided, transcribe it.
+  2. Identify the language of the user's input (e.g., Gujarati, Hindi, English).
+  3. Translate the meaning to English so the backend can process it. 
+     - CRITICAL: If they say a number (like "એક" or "one"), output ONLY the digit "1". 
+     - If they say a greeting, output "hello".
+  Return STRICT JSON: {"englishTranslation": "...", "originalLanguage": "Gujarati"}`;
+
+  parts.push({ text: prompt });
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
+        contents: [{ role: 'user', parts }]
+      })
+    });
+    const data = await response.json();
+    const jsonStr = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    const parsed = JSON.parse(jsonStr);
+    
+    return {
+       text: parsed.englishTranslation || bodyRaw || '',
+       language: parsed.originalLanguage || 'English'
+    };
+  } catch (e) {
+    console.error("[Translation Error]", e);
+    return { text: bodyRaw || '', language: 'English' };
+  }
+}
+
+// --- NEW: Outgoing Translation ---
+async function translateForUser(text, targetLanguage) {
+  if (!targetLanguage || targetLanguage.toLowerCase() === 'english') return text;
+  
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const prompt = `Translate the following system message to ${targetLanguage}.
+  Keep all formatting, newlines, and list numbers EXACTLY the same. Do not add conversational filler.
+  Message:\n${text}`;
+
+  try {
+    const response = await fetch(endpoint, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({
+         generationConfig: { temperature: 0.1 },
+         contents: [{ role: 'user', parts: [{ text: prompt }] }]
+       })
+    });
+    const data = await response.json();
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || text;
+  } catch (e) {
+    return text;
+  }
+}
 
 module.exports = router;
