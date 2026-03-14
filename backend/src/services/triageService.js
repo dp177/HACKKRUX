@@ -1,6 +1,22 @@
 const axios = require('axios');
 
-const TRIAGE_AI_URL = (process.env.TRIAGE_AI_URL || process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001').replace(/\/$/, '');
+function normalizeAiBaseUrl(raw) {
+  const cleaned = String(raw || '').trim().replace(/\/$/, '');
+  if (!cleaned) return 'http://localhost:5001';
+
+  // Accept env values like:
+  // - https://host
+  // - https://host/api
+  // - https://host/api/v1
+  // and normalize all of them to https://host
+  return cleaned.replace(/\/api(?:\/v1)?$/i, '');
+}
+
+const TRIAGE_AI_URL = normalizeAiBaseUrl(
+  process.env.TRIAGE_AI_URL
+  || process.env.TRIAGE_ENGINE_URL
+  || 'https://jeet2207-triage.hf.space'
+);
 
 const http = axios.create({
   baseURL: TRIAGE_AI_URL,
@@ -15,10 +31,33 @@ function normalizeHistory(conversationHistory) {
     .filter((m) => m.content.trim().length > 0);
 }
 
+async function postAiJson(pathCandidates, payload) {
+  let lastError = null;
+
+  for (const path of pathCandidates) {
+    try {
+      console.log('[TriageService] try_json_endpoint', { aiUrl: TRIAGE_AI_URL, path });
+      const { data } = await http.post(path, payload || {});
+      return data;
+    } catch (error) {
+      const status = error?.response?.status;
+      lastError = error;
+      // If endpoint path is wrong on this deployment, try next candidate.
+      if (status === 404) {
+        console.warn('[TriageService] endpoint_404_try_next', { path, status });
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw lastError || new Error('No AI endpoint candidate succeeded');
+}
+
 async function getNextQuestions(conversationHistory) {
   const payload = { conversation_history: normalizeHistory(conversationHistory) };
   console.log('[TriageService] chat-next request', { historyLength: payload.conversation_history.length, aiUrl: TRIAGE_AI_URL });
-  const { data } = await http.post('/api/v1/chat/next-questions', payload);
+  const data = await postAiJson(['/api/v1/chat/next-questions', '/chat/next-questions'], payload);
   console.log('[TriageService] chat-next response', { questions: Array.isArray(data?.questions) ? data.questions.length : 0 });
   return data;
 }
@@ -42,28 +81,47 @@ async function analyzeTriage(payload, file) {
       file.originalname || 'upload.bin'
     );
 
-    const response = await fetch(`${TRIAGE_AI_URL}/api/v1/analyze-triage`, {
-      method: 'POST',
-      body: form
-    });
+    const uploadCandidates = [
+      `${TRIAGE_AI_URL}/api/v1/analyze-triage`,
+      `${TRIAGE_AI_URL}/analyze-triage`
+    ];
 
-    if (!response.ok) {
+    let lastUploadError = null;
+    for (const endpoint of uploadCandidates) {
+      console.log('[TriageService] try_file_endpoint', { endpoint });
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        body: form
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('[TriageService] analyze file response', {
+          riskScore: data?.risk_score ?? null,
+          urgency: data?.urgency_level ?? null,
+          department: data?.department ?? null
+        });
+        return data;
+      }
+
       const text = await response.text();
-      console.error('[TriageService] analyze file error', { status: response.status, body: text.slice(0, 500) });
-      throw new Error(`AI analyze failed (${response.status}): ${text.slice(0, 300)}`);
+      lastUploadError = new Error(`AI analyze failed (${response.status}) at ${endpoint}: ${text.slice(0, 300)}`);
+      console.error('[TriageService] analyze file error', {
+        endpoint,
+        status: response.status,
+        body: text.slice(0, 500)
+      });
+
+      if (response.status !== 404) {
+        throw lastUploadError;
+      }
     }
 
-    const data = await response.json();
-    console.log('[TriageService] analyze file response', {
-      riskScore: data?.risk_score ?? null,
-      urgency: data?.urgency_level ?? null,
-      department: data?.department ?? null
-    });
-    return data;
+    throw lastUploadError || new Error('AI analyze upload failed');
   }
 
   try {
-    const { data } = await http.post('/api/v1/analyze-triage', payload || {});
+    const data = await postAiJson(['/api/v1/analyze-triage', '/analyze-triage'], payload || {});
     console.log('[TriageService] analyze response', {
       riskScore: data?.risk_score ?? null,
       urgency: data?.urgency_level ?? null,
@@ -80,7 +138,10 @@ async function analyzeTriage(payload, file) {
 }
 
 async function rescoreBatch(patients) {
-  const { data } = await http.post('/api/v1/rescore-batch', { patients: Array.isArray(patients) ? patients : [] });
+  const data = await postAiJson(
+    ['/api/v1/rescore-batch', '/rescore-batch'],
+    { patients: Array.isArray(patients) ? patients : [] }
+  );
   return data;
 }
 
