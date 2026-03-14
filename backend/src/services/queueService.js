@@ -1,4 +1,4 @@
-const { Queue, Doctor } = require('../models');
+const { Queue, Doctor, Department, Hospital } = require('../models');
 const { getSocketServer } = require('../utils/socketServer');
 const { rescoreBatch } = require('./triageService');
 
@@ -46,8 +46,12 @@ async function getAvgConsultationMinutesForDepartment(departmentId) {
 
 function queuePayload(entry, avgConsultationMinutes) {
   const position = Number(entry.queuePosition || 1);
-  const patientsAhead = Math.max(0, position - 1);
-  const estimatedWaitMinutes = patientsAhead * avgConsultationMinutes;
+  const patientsAhead = Number.isFinite(Number(entry.patientsAhead))
+    ? Number(entry.patientsAhead)
+    : Math.max(0, position - 1);
+  const estimatedWaitMinutes = Number.isFinite(Number(entry.estimatedWaitMinutes))
+    ? Number(entry.estimatedWaitMinutes)
+    : patientsAhead * avgConsultationMinutes;
 
   return {
     patientId: String(entry.patientId),
@@ -59,8 +63,39 @@ function queuePayload(entry, avgConsultationMinutes) {
     priorityLevel: entry.priorityLevel,
     riskScore: Number(entry.riskScore || 0),
     status: entry.status,
+    hospitalName: entry.hospitalName || null,
+    departmentName: entry.departmentName || null,
     departmentId: entry.departmentId ? String(entry.departmentId) : null,
     hospitalId: entry.hospitalId ? String(entry.hospitalId) : null
+  };
+}
+
+async function resolveQueueNames({ departmentId, hospitalId }) {
+  let resolvedDepartmentId = departmentId ? String(departmentId) : null;
+  let resolvedHospitalId = hospitalId ? String(hospitalId) : null;
+  let departmentName = null;
+  let hospitalName = null;
+
+  if (resolvedDepartmentId) {
+    const dept = await Department.findById(resolvedDepartmentId).select('name hospitalId').lean();
+    if (dept) {
+      departmentName = dept.name || null;
+      if (!resolvedHospitalId && dept.hospitalId) {
+        resolvedHospitalId = String(dept.hospitalId);
+      }
+    }
+  }
+
+  if (resolvedHospitalId) {
+    const hospital = await Hospital.findById(resolvedHospitalId).select('name').lean();
+    hospitalName = hospital?.name || null;
+  }
+
+  return {
+    departmentName,
+    hospitalName,
+    resolvedDepartmentId,
+    resolvedHospitalId
   };
 }
 
@@ -104,16 +139,37 @@ async function recalculateDepartmentQueue(departmentId) {
 
   const avgConsultationMinutes = await getAvgConsultationMinutesForDepartment(departmentId);
 
+  let departmentName = null;
+  let hospitalName = null;
+  const department = await Department.findById(departmentId).select('name hospitalId').lean();
+  if (department) {
+    departmentName = department.name || null;
+    if (department.hospitalId) {
+      const hospital = await Hospital.findById(department.hospitalId).select('name').lean();
+      hospitalName = hospital?.name || null;
+    }
+  }
+
   const waiting = await Queue.find({ departmentId, status: 'WAITING' }).sort({ priorityScore: -1, joinedAt: 1, createdAt: 1 });
 
   for (let i = 0; i < waiting.length; i += 1) {
     const entry = waiting[i];
     const nextPosition = i + 1;
+    const nextPatientsAhead = i;
     const nextEstimated = i * avgConsultationMinutes;
 
-    if (entry.queuePosition !== nextPosition || entry.estimatedWaitMinutes !== nextEstimated) {
+    if (
+      entry.queuePosition !== nextPosition
+      || entry.patientsAhead !== nextPatientsAhead
+      || entry.estimatedWaitMinutes !== nextEstimated
+      || (departmentName && entry.departmentName !== departmentName)
+      || (hospitalName && entry.hospitalName !== hospitalName)
+    ) {
       entry.queuePosition = nextPosition;
+      entry.patientsAhead = nextPatientsAhead;
       entry.estimatedWaitMinutes = nextEstimated;
+      if (departmentName) entry.departmentName = departmentName;
+      if (hospitalName) entry.hospitalName = hospitalName;
       await entry.save();
     }
 
@@ -148,6 +204,8 @@ async function enqueuePatientToDepartmentQueue({ patientId, triageRecordId, depa
   const resolvedRisk = Number(riskScore || 0);
   const resolvedUrgency = normalizeUrgency(urgencyLevel);
   const priorityScore = mapUrgencyToPriorityScore(resolvedUrgency, resolvedRisk);
+  const nameResolution = await resolveQueueNames({ departmentId, hospitalId });
+  const persistedHospitalId = nameResolution.resolvedHospitalId || (hospitalId ? String(hospitalId) : null);
 
   await Queue.findOneAndUpdate(
     { patientId, departmentId, status: 'WAITING' },
@@ -155,13 +213,18 @@ async function enqueuePatientToDepartmentQueue({ patientId, triageRecordId, depa
       patientId,
       triageRecordId: triageRecordId || null,
       departmentId,
-      hospitalId: hospitalId || null,
+      hospitalId: persistedHospitalId || null,
+      hospitalName: nameResolution.hospitalName,
+      departmentName: nameResolution.departmentName,
       riskScore: resolvedRisk,
       urgencyLevel: resolvedUrgency,
       priorityScore,
       priorityLevel: resolvedUrgency,
       status: 'WAITING',
       joinedAt: new Date(),
+      patientsAhead: 0,
+      queuePosition: 1,
+      estimatedWaitMinutes: 0,
       calledAt: null,
       startedAt: null,
       completedAt: null
@@ -327,7 +390,26 @@ async function runRescoreForAllDepartments() {
     durationMs: Date.now() - startedAt
   });
 
-  return { scanned: waitingRows.length, updated, departments: byDepartment.size };
+  const refreshedRows = await Queue.find({ status: 'WAITING' })
+    .select('patientId hospitalName departmentName queuePosition patientsAhead estimatedWaitMinutes')
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  const queueSnapshots = refreshedRows.map((row) => ({
+    patientId: String(row.patientId),
+    hospital: row.hospitalName || null,
+    department: row.departmentName || null,
+    queuePosition: Number(row.queuePosition || 0),
+    patientsAhead: Number(row.patientsAhead || 0),
+    estimatedWaitMinutes: Number(row.estimatedWaitMinutes || 0)
+  }));
+
+  return {
+    scanned: waitingRows.length,
+    updated,
+    departments: byDepartment.size,
+    queueSnapshots
+  };
 }
 
 module.exports = {

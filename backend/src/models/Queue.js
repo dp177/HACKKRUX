@@ -26,6 +26,14 @@ const queueSchema = new mongoose.Schema({
     ref: 'Department',
     default: null
   },
+  hospitalName: {
+    type: String,
+    default: null
+  },
+  departmentName: {
+    type: String,
+    default: null
+  },
 
   riskScore: {
     type: Number,
@@ -46,6 +54,10 @@ const queueSchema = new mongoose.Schema({
     type: Number,
     required: true,
     default: 1
+  },
+  patientsAhead: {
+    type: Number,
+    default: 0
   },
   status: {
     type: String,

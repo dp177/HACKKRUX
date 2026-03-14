@@ -128,6 +128,36 @@ export default function AppTabs() {
     return () => sub.remove();
   }, [opacity, translateY]);
 
+  React.useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('app:switch-tab', (payload) => {
+      const nextTab = String(payload?.tab || '');
+      if (!TABS.some((tab) => tab.key === nextTab)) return;
+
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      hiddenRef.current = false;
+      lastOffsetRef.current = 0;
+      Animated.parallel([
+        Animated.timing(translateY, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: true
+        }),
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: 160,
+          useNativeDriver: true
+        })
+      ]).start();
+
+      setAuxScreen('');
+      setActiveTab(nextTab);
+      setMenuOpen(false);
+      console.log('[MobileApp] tab_change_event', { nextTab });
+    });
+
+    return () => sub.remove();
+  }, [opacity, translateY]);
+
   const ActiveScreen = React.useMemo(() => {
     return TABS.find((tab) => tab.key === activeTab)?.component || HomeScreen;
   }, [activeTab]);

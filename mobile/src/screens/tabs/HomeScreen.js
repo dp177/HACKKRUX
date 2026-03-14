@@ -130,6 +130,7 @@ export default function HomeScreen() {
   const [bookingReason, setBookingReason] = useState('');
   const [upcomingPreview, setUpcomingPreview] = useState(null);
   const [upcomingPreviewLoading, setUpcomingPreviewLoading] = useState(false);
+  const [triageOutcome, setTriageOutcome] = useState(null);
 
   const greetingName = user?.name?.split(' ')[0] || 'Patient';
 
@@ -465,15 +466,25 @@ export default function HomeScreen() {
       queuePosition: result?.queue?.queuePosition
     });
     setActiveQueue({
-      hospitalName: selectedHospital?.name,
-      departmentName: result?.triage?.department || selectedDepartment?.name,
+      hospitalName: result?.queue?.hospitalName || result?.queue?.hospital || selectedHospital?.name,
+      departmentName: result?.queue?.departmentName || result?.queue?.department || result?.triage?.department || selectedDepartment?.name,
       priorityLevel: result?.triage?.urgency_level,
+      tokenNumber: result?.queue?.tokenNumber,
       queuePosition: result?.queue?.queuePosition,
+      patientsAhead: result?.queue?.patientsAhead,
       estimatedWaitMinutes: result?.queue?.estimatedWaitMinutes,
       recommendedSpecialty: result?.triage?.department,
       riskScore: result?.triage?.risk_score,
       summary: result?.triage?.explainability_summary,
       redFlags: result?.triage?.red_flags || []
+    });
+    setTriageOutcome({
+      tokenNumber: result?.queue?.tokenNumber ?? result?.queue?.queuePosition ?? null,
+      queuePosition: result?.queue?.queuePosition ?? null,
+      estimatedWaitMinutes: result?.queue?.estimatedWaitMinutes ?? null,
+      urgencyLevel: result?.triage?.urgency_level ?? null,
+      riskScore: result?.triage?.risk_score ?? null,
+      department: result?.triage?.department || selectedDepartment?.name || null
     });
     pushRoute('result');
   }
@@ -531,6 +542,12 @@ export default function HomeScreen() {
     setFallbackInfo({ level: '', name: '' });
     setSlotFallbackMessage('');
     setSlotInfoMessage('');
+    setTriageOutcome(null);
+  }
+
+  function goToActiveQueueTab() {
+    DeviceEventEmitter.emit('app:switch-tab', { tab: 'Queue' });
+    restartFlow();
   }
 
   const filteredHospitals = useMemo(() => {
@@ -885,18 +902,38 @@ export default function HomeScreen() {
   return (
     <View style={styles.root}>
       <Header title="Submission Result" onBack={popRoute} />
-      <View style={styles.contentPage}>
+      <ScrollView
+        style={styles.root}
+        contentContainerStyle={styles.contentPage}
+        onScroll={emitScroll}
+        scrollEventThrottle={16}
+      >
         <View style={styles.resultCard}>
-          <Text style={styles.resultTitle}>{flowMode === 'booking' ? 'Booking Complete' : 'Submission Complete'}</Text>
+          <Text style={styles.resultTitle}>{flowMode === 'booking' ? 'Booking Complete' : 'Triage Submitted Successfully'}</Text>
+          {flowMode !== 'booking' ? <Text style={styles.resultSuccess}>AI analysis complete. You are now in the active queue.</Text> : null}
           <Text style={styles.resultText}>Hospital: {selectedHospital?.name}</Text>
-          <Text style={styles.resultText}>Department: {selectedDepartment?.name}</Text>
+          <Text style={styles.resultText}>Department: {triageOutcome?.department || selectedDepartment?.name}</Text>
           {flowMode === 'booking' && selectedDoctor ? <Text style={styles.resultText}>Doctor: {selectedDoctor?.name}</Text> : null}
           {flowMode === 'booking' && selectedSlot ? <Text style={styles.resultText}>Slot: {selectedDate} {selectedSlot}</Text> : null}
+
+          {flowMode !== 'booking' && triageOutcome?.tokenNumber != null ? (
+            <Text style={styles.resultText}>Token: {triageOutcome.tokenNumber}</Text>
+          ) : null}
+          {flowMode !== 'booking' && triageOutcome?.estimatedWaitMinutes != null ? (
+            <Text style={styles.resultText}>Estimated Wait: {triageOutcome.estimatedWaitMinutes} min</Text>
+          ) : null}
+
+          {flowMode !== 'booking' ? (
+            <TouchableOpacity style={styles.queueBtn} onPress={goToActiveQueueTab}>
+              <Text style={styles.queueBtnText}>Go To Active Queue</Text>
+            </TouchableOpacity>
+          ) : null}
+
           <TouchableOpacity style={styles.restartBtn} onPress={restartFlow} disabled={submitting}>
             <Text style={styles.restartBtnText}>Start New Request</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -1002,7 +1039,10 @@ const styles = StyleSheet.create({
   hospitalStats: { marginTop: 8, fontFamily: 'Inter_600SemiBold', color: colors.primaryDark, fontSize: 12 },
   resultCard: { marginHorizontal: spacing.lg, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, padding: spacing.lg },
   resultTitle: { fontFamily: 'Inter_700Bold', fontSize: 20, color: colors.text, marginBottom: spacing.sm },
+  resultSuccess: { fontFamily: 'Inter_600SemiBold', color: '#0f766e', marginBottom: spacing.sm },
   resultText: { fontFamily: 'Inter_400Regular', color: colors.text, marginTop: 3 },
+  queueBtn: { marginTop: spacing.md, backgroundColor: colors.primaryDark, borderRadius: radii.md, alignItems: 'center', paddingVertical: 12 },
+  queueBtnText: { color: '#fff', fontFamily: 'Inter_700Bold' },
   restartBtn: { marginTop: spacing.md, backgroundColor: colors.primary, borderRadius: radii.md, alignItems: 'center', paddingVertical: 12 },
   restartBtnText: { color: '#fff', fontFamily: 'Inter_600SemiBold' },
   overlay: { marginHorizontal: spacing.lg, marginTop: spacing.md, alignItems: 'center', gap: spacing.sm },

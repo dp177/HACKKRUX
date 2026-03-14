@@ -200,8 +200,12 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       queue: {
         tokenNumber: queueEntry?.queuePosition || null,
         queuePosition: queueEntry?.queuePosition || null,
-        patientsAhead: queueEntry?.queuePosition ? Math.max(0, queueEntry.queuePosition - 1) : null,
+        patientsAhead: queueEntry?.patientsAhead ?? null,
         estimatedWaitMinutes: queueEntry?.estimatedWaitMinutes ?? triageRecord.estimatedWaitMinutes,
+        hospital: queueEntry?.hospitalName || null,
+        department: queueEntry?.departmentName || triageRecord.recommendedSpecialty || null,
+        hospitalName: queueEntry?.hospitalName || null,
+        departmentName: queueEntry?.departmentName || null,
         status: queueEntry?.status || null
       },
       aiRaw: ai
@@ -229,6 +233,7 @@ router.post('/rescore-batch', authenticateDoctor, async (req, res) => {
     return res.json({
       message: 'Rescore complete',
       aiUrl: TRIAGE_AI_URL,
+      refreshedQueue: summary.queueSnapshots || [],
       ...summary
     });
   } catch (error) {

@@ -1,14 +1,23 @@
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { DeviceEventEmitter, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useAuthStore } from '../../store/authStore';
 import { colors, radii, spacing } from '../../theme/tokens';
 
 export default function ProfileScreen() {
+  function emitScroll(event) {
+    DeviceEventEmitter.emit('app:tab-scroll', { y: event?.nativeEvent?.contentOffset?.y || 0 });
+  }
+
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
 
   return (
-    <View style={styles.root}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={styles.content}
+      onScroll={emitScroll}
+      scrollEventThrottle={16}
+    >
       <Text style={styles.title}>Profile</Text>
 
       <View style={styles.card}>
@@ -25,12 +34,13 @@ export default function ProfileScreen() {
       <TouchableOpacity style={styles.logout} onPress={logout}>
         <Text style={styles.logoutText}>Logout</Text>
       </TouchableOpacity>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background, padding: spacing.lg },
+  content: { paddingBottom: spacing.xl },
   title: { fontFamily: 'Inter_700Bold', fontSize: 26, color: colors.text },
   card: { marginTop: spacing.lg, backgroundColor: '#fff', borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md },
   label: { marginTop: spacing.sm, fontFamily: 'Inter_600SemiBold', color: colors.primaryDark },
