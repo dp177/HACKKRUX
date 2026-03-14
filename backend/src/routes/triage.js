@@ -441,6 +441,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
   const traceId = req.headers['x-trace-id'] || buildTraceId('analyze');
   try {
     const startedAt = Date.now();
+    const contentType = String(req.headers['content-type'] || '');
     const body = req.body || {};
     const payloadBody = parseMaybeJson(body.payload, null);
     const sourceBody = payloadBody && typeof payloadBody === 'object'
@@ -455,17 +456,41 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
     const recordVitals = normalizeVitalsForRecord(sourceBody.vitals || sourceBody.vitalSigns);
     const chosenDepartment = normalizeOptionalString(
       sourceBody.chosen_department
+      || sourceBody.choosen_department
       || sourceBody.chosenDepartment
+      || sourceBody.choosenDepartment
       || sourceBody.selected_department
       || sourceBody.selectedDepartment
       || sourceBody.department_id
       || sourceBody.departmentId
       || context?.chosen_department
+      || context?.choosen_department
       || context?.chosenDepartment
+      || context?.choosenDepartment
     );
     const chosenDepartmentName = await resolveDepartmentName(chosenDepartment);
     const inputMode = normalizeInputMode(sourceBody.input_mode || sourceBody.inputMode || context?.input_mode || context?.inputMode);
     const chiefComplaint = inferChiefComplaint(sourceBody.chief_complaint || sourceBody.chiefComplaint, context, conversationHistory) || 'General consultation';
+
+    console.log('[TriageAnalyze] multipart_debug', {
+      traceId,
+      contentType,
+      bodyKeys: Object.keys(body || {}),
+      sourceBodyKeys: Object.keys(sourceBody || {}),
+      hasPayloadField: Object.prototype.hasOwnProperty.call(body, 'payload'),
+      payloadFieldType: typeof body?.payload,
+      payloadFieldLength: typeof body?.payload === 'string' ? body.payload.length : null,
+      payloadParseSuccess: Boolean(payloadBody && typeof payloadBody === 'object'),
+      hasFileField: Boolean(req.file),
+      fileMeta: req.file
+        ? {
+            fieldname: req.file.fieldname,
+            originalname: req.file.originalname,
+            mimetype: req.file.mimetype,
+            size: req.file.size
+          }
+        : null
+    });
 
     console.log('[TriageAnalyze] start', {
       traceId,
@@ -506,6 +531,16 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       context: context || {},
       vitals: aiVitals
     };
+
+    console.log('[TriageAnalyze] outgoing_ai_payload', {
+      traceId,
+      keys: Object.keys(payload),
+      patientId: payload.patient_id,
+      chosenDepartment: payload.chosen_department,
+      conversationLength: Array.isArray(payload.conversation_history) ? payload.conversation_history.length : 0,
+      contextKeys: Object.keys(payload.context || {}),
+      vitalsKeys: Object.keys(payload.vitals || {})
+    });
 
     const ai = await analyzeTriage(payload, req.file || null);
     console.log('[TriageAnalyze] ai_success', {

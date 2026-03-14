@@ -116,7 +116,8 @@ async function postAiAnalyzeMultipart(payload, file) {
       const endpoint = `${baseUrl}${path}`;
       try {
         const form = new FormData();
-        form.append('payload', JSON.stringify(payload || {}));
+        const payloadString = JSON.stringify(payload || {});
+        form.append('payload', payloadString);
 
         if (file?.buffer?.length) {
           form.append(
@@ -128,7 +129,11 @@ async function postAiAnalyzeMultipart(payload, file) {
 
         console.log('[TriageService] try_multipart_endpoint', {
           endpoint,
-          hasFile: Boolean(file?.buffer?.length)
+          hasFile: Boolean(file?.buffer?.length),
+          payloadLength: payloadString.length,
+          payloadKeys: Object.keys(payload || {}),
+          chosenDepartment: payload?.chosen_department || null,
+          conversationLength: Array.isArray(payload?.conversation_history) ? payload.conversation_history.length : 0
         });
 
         const response = await fetch(endpoint, {
