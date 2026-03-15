@@ -27,7 +27,9 @@ async function getVerification(hash) {
 }
 
 export default async function VerifyPrescriptionPage({ params }) {
-  const hash = String(params?.hash || '').trim().toLowerCase();
+  // Next.js may provide route params as a promise in newer app-router versions.
+  const resolvedParams = await Promise.resolve(params);
+  const hash = String(resolvedParams?.hash || '').trim().toLowerCase();
   const { payload } = await getVerification(hash);
   const isValid = Boolean(payload?.valid);
 

@@ -29,12 +29,12 @@ const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:500
 const signatureUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 2 * 1024 * 1024
+    fileSize: 500 * 1024
   },
   fileFilter: (_req, file, cb) => {
-    const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+    const allowed = ['image/png', 'image/jpeg', 'image/jpg'];
     if (!allowed.includes(String(file?.mimetype || '').toLowerCase())) {
-      return cb(new Error('Only PNG, JPEG, and WEBP signature files are allowed'));
+      return cb(new Error('Only PNG and JPEG signature files are allowed'));
     }
     return cb(null, true);
   }

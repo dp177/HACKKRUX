@@ -180,6 +180,31 @@ export async function createPrescription(payload, token) {
   });
 }
 
+export async function downloadPrescriptionPdf(prescriptionId, token) {
+  const response = await fetch(`${API_BASE_URL}/prescriptions/${encodeURIComponent(prescriptionId)}/pdf`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store'
+  });
+
+  if (!response.ok) {
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+    throw new Error(data?.error || `Request failed: ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const disposition = String(response.headers.get('content-disposition') || '');
+  const filenameMatch = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+  const fileName = decodeURIComponent(filenameMatch?.[1] || filenameMatch?.[2] || `prescription-${prescriptionId}.pdf`);
+
+  return { blob, fileName };
+}
+
 export async function uploadDoctorSignature(file, token) {
   const formData = new FormData();
   formData.append('signature', file);

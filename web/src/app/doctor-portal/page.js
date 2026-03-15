@@ -53,7 +53,8 @@ import {
   updateDoctorBreak,
   updateDoctorSlot,
   createPrescription,
-  uploadDoctorSignature
+  uploadDoctorSignature,
+  downloadPrescriptionPdf
 } from '../../lib/api';
 
 const NAV_ITEMS = [
@@ -117,6 +118,22 @@ function normalizePriority(raw) {
 function priorityBadge(priority) {
   const meta = PRIORITY_META[priority] || PRIORITY_META.low;
   return <Badge className={`border text-[11px] font-semibold normal-case tracking-normal ${meta.color}`}>{meta.label}</Badge>;
+}
+
+async function triggerPrescriptionDownload(prescriptionId, token) {
+  const { blob, fileName } = await downloadPrescriptionPdf(prescriptionId, token);
+  const objectUrl = window.URL.createObjectURL(blob);
+
+  try {
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    window.URL.revokeObjectURL(objectUrl);
+  }
 }
 
 function queueRowFromRaw(item, index) {
@@ -848,7 +865,7 @@ export default function DoctorPortalPage() {
     try {
       setPrescriptionSubmitting(true);
 
-      await createPrescription({
+      const response = await createPrescription({
         consultationId: selectedQueuePatient.queueEntryId,
         form: {
           diagnosis: prescriptionForm.diagnosis,
@@ -860,7 +877,27 @@ export default function DoctorPortalPage() {
         remarks: prescriptionForm.remarks
       }, token);
 
-      toast.success('Prescription generated and consultation completed');
+      const generatedPrescriptionId = response?.prescription?._id || response?.prescription?.id || null;
+      const verificationHash = response?.verification?.hash || response?.prescription?.hash || null;
+
+      if (generatedPrescriptionId) {
+        try {
+          await triggerPrescriptionDownload(generatedPrescriptionId, token);
+        } catch (downloadError) {
+          toast.warning(downloadError?.message || 'Prescription generated, but auto-download failed');
+        }
+      }
+
+      if (!profile?.signatureUrl) {
+        toast.warning('Prescription generated without signature. Upload a PNG/JPEG signature in Profile for signed PDFs.');
+      }
+
+      if (verificationHash) {
+        toast.success(`Prescription generated. Verification hash: ${verificationHash.slice(0, 10)}...`);
+      } else {
+        toast.success('Prescription generated and consultation completed');
+      }
+
       await handleSelectQueuePatient(selectedQueuePatient);
       await loadPortalData(true);
     } catch (error) {
@@ -1900,7 +1937,7 @@ export default function DoctorPortalPage() {
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <input
               type="file"
-              accept="image/png,image/jpeg,image/jpg,image/webp"
+              accept="image/png,image/jpeg,image/jpg"
               onChange={(event) => setSignatureFile(event.target.files?.[0] || null)}
               className="block w-full max-w-sm cursor-pointer rounded-xl border border-violet-200 bg-white px-3 py-2 text-sm text-slate-700"
             />

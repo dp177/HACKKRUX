@@ -11,7 +11,10 @@ const { authenticateDoctor, authenticatePatient } = require('../middleware/auth'
 const {
   buildPrescriptionHashPayload,
   generatePrescriptionArtifacts,
-  generatePrescriptionHash
+  generatePrescriptionHash,
+  buildVerificationUrl,
+  generateVerificationQrDataUrl,
+  generatePrescriptionPdfBuffer
 } = require('../utils/prescriptionSecurity');
 
 function normalizeOptionalString(value) {
@@ -73,7 +76,7 @@ router.post('/', authenticateDoctor, async (req, res) => {
     }
 
     const [doctor, patient] = await Promise.all([
-      Doctor.findById(doctorId),
+      Doctor.findById(doctorId).populate('hospitalId', 'name address city state phone email'),
       Patient.findById(queueEntry.patientId)
     ]);
 
@@ -315,6 +318,7 @@ router.get('/consultation/:consultationId', authenticateDoctor, async (req, res)
 
 router.get('/:prescriptionId/pdf', authenticateDoctor, async (req, res) => {
   try {
+    const MAX_DIRECT_PDF_BYTES = Number(process.env.PRESCRIPTION_MAX_DOWNLOAD_BYTES || (1.5 * 1024 * 1024));
     const { prescriptionId } = req.params;
     if (!mongoose.Types.ObjectId.isValid(prescriptionId)) {
       return res.status(400).json({ error: 'Invalid prescriptionId' });
@@ -324,7 +328,16 @@ router.get('/:prescriptionId/pdf', authenticateDoctor, async (req, res) => {
       _id: prescriptionId,
       doctorId: req.userId
     })
-      .select('pdfDataUrl pdfFileName')
+      .populate({
+        path: 'doctorId',
+        select: 'firstName lastName specialty licenseNumber signatureUrl signatureMimeType hospitalId',
+        populate: {
+          path: 'hospitalId',
+          select: 'name address city state phone email'
+        }
+      })
+      .populate('patientId', 'firstName lastName dateOfBirth gender phone address city state zipCode')
+      .select('pdfDataUrl pdfFileName verificationUrl hash createdAt form medicines remarks doctorId patientId')
       .lean();
 
     if (!prescription) {
@@ -333,15 +346,24 @@ router.get('/:prescriptionId/pdf', authenticateDoctor, async (req, res) => {
 
     const raw = String(prescription.pdfDataUrl || '');
     const match = raw.match(/^data:application\/pdf;base64,(.+)$/);
-    if (!match) {
-      return res.status(404).json({ error: 'Prescription PDF is not available' });
+    let pdfBuffer = match ? Buffer.from(match[1], 'base64') : null;
+
+    if (!pdfBuffer || pdfBuffer.length > MAX_DIRECT_PDF_BYTES) {
+      const verificationUrl = prescription.verificationUrl || buildVerificationUrl(prescription.hash || '');
+      const qrCodeDataUrl = await generateVerificationQrDataUrl(verificationUrl);
+      pdfBuffer = await generatePrescriptionPdfBuffer({
+        prescription,
+        doctor: prescription.doctorId,
+        patient: prescription.patientId,
+        verificationUrl,
+        qrCodeDataUrl
+      });
     }
 
-    const pdfBuffer = Buffer.from(match[1], 'base64');
     const fileName = prescription.pdfFileName || `prescription-${prescriptionId}.pdf`;
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     return res.send(pdfBuffer);
   } catch (error) {
     console.error('Error fetching prescription PDF:', error);
