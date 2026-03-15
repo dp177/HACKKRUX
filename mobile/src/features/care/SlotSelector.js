@@ -1,6 +1,7 @@
 import React from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { colors, radii, spacing } from '../../theme/tokens';
+import SlotButton from '../../components/home/SlotButton';
 
 function formatSelectedDateLabel(date) {
   if (!date) return '';
@@ -40,22 +41,20 @@ export default function SlotSelector({ slots = [], selectedSlot, selectedDate, i
         data={slots}
         keyExtractor={(item, index) => String(item.slotId || item.time || item.startTime || `slot-${index}`)}
         numColumns={3}
-        columnWrapperStyle={{ gap: spacing.sm }}
-        contentContainerStyle={{ gap: spacing.sm }}
-        renderItem={({ item }) => {
+        columnWrapperStyle={styles.columns}
+        contentContainerStyle={styles.gridContent}
+        renderItem={({ item, index }) => {
           const timeLabel = item.time || item.startTime || '';
           const active = selectedSlot === timeLabel;
           const disabled = item.available === false;
           return (
-            <TouchableOpacity
-              style={[styles.pill, active && styles.pillActive, disabled && styles.pillDisabled]}
-              onPress={() => onSelect(item)}
+            <SlotButton
+              slot={item}
+              active={active}
               disabled={disabled}
-            >
-              <Text style={[styles.pillText, active && styles.pillTextActive, disabled && styles.pillTextDisabled]}>{timeLabel}</Text>
-              {item.endTime ? <Text style={styles.meta}>{item.endTime}</Text> : null}
-              {disabled ? <Text style={styles.meta}>{item.status || 'Booked'}</Text> : null}
-            </TouchableOpacity>
+              onPress={() => onSelect(item)}
+              index={index}
+            />
           );
         }}
       />
@@ -64,15 +63,32 @@ export default function SlotSelector({ slots = [], selectedSlot, selectedDate, i
 }
 
 const styles = StyleSheet.create({
-  wrap: { marginHorizontal: spacing.lg, marginBottom: spacing.md },
-  title: { fontFamily: 'Inter_700Bold', color: colors.text, fontSize: 18, marginBottom: spacing.sm },
-  subtitle: { marginTop: -4, marginBottom: spacing.sm, fontFamily: 'Inter_400Regular', color: colors.muted, fontSize: 13 },
-  infoText: { marginBottom: spacing.sm, fontFamily: 'Inter_400Regular', color: colors.muted, fontSize: 12 },
-  pill: { flex: 1, minWidth: 94, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, backgroundColor: '#fff', alignItems: 'center', paddingVertical: 10 },
-  pillActive: { borderColor: colors.primary, backgroundColor: '#e8f4f1' },
-  pillDisabled: { backgroundColor: '#f2f4f5', borderColor: '#d7dde0' },
-  pillText: { fontFamily: 'Inter_600SemiBold', color: colors.text },
-  pillTextActive: { color: colors.primaryDark },
-  pillTextDisabled: { color: '#9ba7ad' },
-  meta: { marginTop: 2, fontFamily: 'Inter_400Regular', color: '#9ba7ad', fontSize: 11 }
+  wrap: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+    backgroundColor: '#fff',
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md
+  },
+  title: { fontFamily: 'Inter_700Bold', color: colors.text, fontSize: 20, marginBottom: spacing.xs },
+  subtitle: { marginBottom: spacing.sm, fontFamily: 'Inter_400Regular', color: colors.muted, fontSize: 13 },
+  infoText: {
+    marginBottom: spacing.sm,
+    fontFamily: 'Inter_400Regular',
+    color: colors.muted,
+    fontSize: 12,
+    backgroundColor: colors.surfaceAlt,
+    padding: spacing.sm,
+    borderRadius: radii.md
+  },
+  columns: {
+    gap: spacing.sm,
+    marginBottom: spacing.sm
+  },
+  gridContent: {
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.xs
+  }
 });

@@ -12,36 +12,35 @@ import {
   View
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import HomeScreen from '../screens/tabs/HomeScreen';
 import SearchScreen from '../screens/tabs/SearchScreen';
 import QueueScreen from '../screens/tabs/QueueScreen';
 import AppointmentsScreen from '../screens/tabs/AppointmentsScreen';
 import HistoryScreen from '../screens/tabs/HistoryScreen';
 import ProfileScreen from '../screens/tabs/ProfileScreen';
+import TopBar from '../components/home/TopBar';
 import { useAuthStore } from '../store/authStore';
 import { colors } from '../theme/tokens';
 
 const TABS = [
-  { key: 'Home', label: 'Home', icon: 'home-outline', component: HomeScreen },
+  { key: 'Home', label: 'Home', icon: 'home', component: HomeScreen },
   { key: 'Search', label: 'Find', icon: 'search-outline', component: SearchScreen },
   { key: 'Queue', label: 'Queue', icon: 'pulse-outline', component: QueueScreen },
-  { key: 'Appointments', label: 'Appts', icon: 'calendar-outline', component: AppointmentsScreen },
-  { key: 'Profile', label: 'Me', icon: 'person-outline', component: ProfileScreen }
+  { key: 'Appointments', label: 'Appts', icon: 'calendar-outline', component: AppointmentsScreen }
 ];
 
 const ICON_ACTIVE = {
-  Home: 'home-outline',
+  Home: 'home',
   Search: 'search-outline',
   Queue: 'pulse-outline',
-  Appointments: 'calendar-outline',
-  Profile: 'person-outline'
+  Appointments: 'calendar-outline'
 };
 
 const MENU_ITEMS = [
   { key: 'MedicalHistory', label: 'Medical History' },
   { key: 'AppointmentHistory', label: 'Appointment History' },
   { key: 'UploadReports', label: 'Upload Reports' },
-  { key: 'Notifications', label: 'Notifications' },
   { key: 'Settings', label: 'Settings' },
   { key: 'Help', label: 'Help' },
   { key: 'Logout', label: 'Logout' }
@@ -57,6 +56,7 @@ function PlaceholderScreen({ title, subtitle }) {
 }
 
 export default function AppTabs() {
+  const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = React.useState('Home');
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [auxScreen, setAuxScreen] = React.useState('');
@@ -65,6 +65,7 @@ export default function AppTabs() {
   const hiddenRef = React.useRef(false);
   const lastOffsetRef = React.useRef(0);
   const logout = useAuthStore((state) => state.logout);
+  const user = useAuthStore((state) => state.user);
 
   React.useEffect(() => {
     if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -129,6 +130,25 @@ export default function AppTabs() {
   }, [opacity, translateY]);
 
   React.useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('app:open-menu', () => {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setMenuOpen(true);
+    });
+
+    return () => sub.remove();
+  }, []);
+
+  React.useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('app:open-profile', () => {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setMenuOpen(false);
+      setAuxScreen('Profile');
+    });
+
+    return () => sub.remove();
+  }, []);
+
+  React.useEffect(() => {
     const sub = DeviceEventEmitter.addListener('app:switch-tab', (payload) => {
       const nextTab = String(payload?.tab || '');
       if (!TABS.some((tab) => tab.key === nextTab)) return;
@@ -172,25 +192,43 @@ export default function AppTabs() {
     if (auxScreen === 'UploadReports') {
       return <PlaceholderScreen title="Upload Reports" subtitle="Lab reports, prescriptions and scans upload can be managed here." />;
     }
-    if (auxScreen === 'Notifications') {
-      return <PlaceholderScreen title="Notifications" subtitle="Appointment reminders, queue updates and doctor delay alerts appear here." />;
-    }
     if (auxScreen === 'Settings') {
       return <PlaceholderScreen title="Settings" subtitle="Preferences, language and app options can be managed here." />;
     }
     if (auxScreen === 'Help') {
       return <PlaceholderScreen title="Help" subtitle="Support and FAQ are available here." />;
     }
+    if (auxScreen === 'Profile') {
+      return <ProfileScreen />;
+    }
     return null;
   }, [auxScreen]);
 
+  const showTopBar = activeTab !== 'Home' || Boolean(auxScreen);
+  const auxTitleMap = {
+    MedicalHistory: 'Medical History',
+    AppointmentHistory: 'Appointment History',
+    UploadReports: 'Upload Reports',
+    Settings: 'Settings',
+    Help: 'Help',
+    Profile: 'Profile'
+  };
+  const topBarTitle = auxScreen
+    ? (auxTitleMap[auxScreen] || 'Menu')
+    : (activeTab === 'Search' ? 'Search' : activeTab === 'Queue' ? 'Queue' : activeTab === 'Appointments' ? 'Appointments' : 'Home');
+  const menuTopOffset = showTopBar ? insets.top + 53 : 0;
+
   return (
     <View style={styles.root}>
-      <View style={styles.menuToggleWrap}>
-        <TouchableOpacity style={styles.menuToggle} onPress={() => setMenuOpen(true)}>
-          <Ionicons name="menu-outline" size={22} color={colors.text} />
-        </TouchableOpacity>
-      </View>
+      {showTopBar ? (
+        <TopBar
+          title={topBarTitle}
+          onBack={auxScreen ? () => setAuxScreen('') : undefined}
+          onMenu={auxScreen ? undefined : () => setMenuOpen(true)}
+          onProfile={() => setAuxScreen('Profile')}
+          avatarLabel={user?.name || 'Patient'}
+        />
+      ) : null}
 
       <View style={styles.content}>
         {auxScreen ? AuxScreenComponent : <ActiveScreen />}
@@ -204,7 +242,7 @@ export default function AppTabs() {
           return (
             <TouchableOpacity
               key={tab.key}
-              style={[styles.tabItem, active ? styles.tabItemActiveSlot : styles.tabItemInactiveSlot]}
+              style={styles.tabItem}
               onPress={() => {
                 LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                 console.log('[MobileApp] tab_change:', tab.key);
@@ -228,13 +266,7 @@ export default function AppTabs() {
               activeOpacity={0.8}
             >
               <View style={[styles.tabInner, active && styles.tabInnerActive]}>
-                {active ? (
-                  <Ionicons name={iconName} color="#ffffff" size={18} />
-                ) : (
-                  <View style={styles.inactiveIconCircle}>
-                    <Ionicons name={iconName} color={colors.primaryDark} size={20} />
-                  </View>
-                )}
+                <Ionicons name={iconName} color={active ? '#ffffff' : colors.primaryDark} size={18} />
                 {active ? (
                   <Text style={styles.tabLabelActive} numberOfLines={1} ellipsizeMode="tail">
                     {tab.label}
@@ -248,8 +280,7 @@ export default function AppTabs() {
       </Animated.View>
 
       {menuOpen ? (
-        <View style={styles.menuOverlay}>
-          <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setMenuOpen(false)} />
+        <View style={[styles.menuOverlay, { top: menuTopOffset }]}>
           <View style={styles.menuPanel}>
             <Text style={styles.menuTitle}>Menu</Text>
             {MENU_ITEMS.map((item) => (
@@ -276,6 +307,7 @@ export default function AppTabs() {
               </TouchableOpacity>
             ) : null}
           </View>
+          <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setMenuOpen(false)} />
         </View>
       ) : null}
     </View>
@@ -288,97 +320,71 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   content: {
-    flex: 1,
-    paddingTop: 52
-  },
-  menuToggleWrap: {
-    position: 'absolute',
-    top: 8,
-    right: 16,
-    zIndex: 20
-  },
-  menuToggle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: '#fff'
+    flex: 1
   },
   tabBarWrap: {
     position: 'absolute',
     left: 16,
     right: 16,
-    bottom: 24,
+    bottom: 20,
     backgroundColor: 'transparent'
   },
   tabBar: {
+    position: 'relative',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    backgroundColor: '#fff',
+    backgroundColor: '#ffffffee',
     borderColor: colors.border,
     borderWidth: 1,
-    borderRadius: 40,
-    minHeight: 88,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    borderRadius: 999,
+    minHeight: 72,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
     alignItems: 'center',
-    shadowColor: '#5f7380',
-    shadowOpacity: 0.2,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 16
+    overflow: 'hidden'
   },
   tabItem: {
-    height: 58,
-    borderRadius: 29,
+    flex: 1,
+    height: 60,
+    borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
     marginHorizontal: 2
   },
-  tabItemActiveSlot: {
-    width: '26%'
-  },
-  tabItemInactiveSlot: {
-    width: '15.5%'
-  },
   tabInner: {
     width: '100%',
-    height: 58,
-    borderRadius: 29,
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  tabInnerActive: {
+    height: '100%',
+    borderRadius: 999,
     flexDirection: 'row',
-    borderRadius: 29,
-    backgroundColor: colors.primary,
+    alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
+    gap: 6,
     paddingHorizontal: 10
   },
-  inactiveIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.surfaceAlt,
-    alignItems: 'center',
-    justifyContent: 'center'
+  tabInnerActive: {
+    backgroundColor: colors.primary,
+    width: '108%',
+    height: '100%',
+    borderRadius: 999,
+    alignSelf: 'center'
   },
   tabLabel: {
+    color: colors.primaryDark,
+    fontFamily: 'Inter_600SemiBold',
     fontSize: 11,
-    fontFamily: 'Inter_600SemiBold'
+    flexShrink: 1
   },
   tabLabelActive: {
-    color: '#f6fffc',
+    color: '#f3fffb',
     fontFamily: 'Inter_700Bold',
-    fontSize: 12,
+    fontSize: 11,
     flexShrink: 1
   },
   menuOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
     zIndex: 30,
     flexDirection: 'row'
   },
@@ -389,9 +395,10 @@ const styles = StyleSheet.create({
   menuPanel: {
     width: 270,
     backgroundColor: '#fff',
-    borderLeftWidth: 1,
-    borderLeftColor: colors.border,
-    padding: 16,
+    borderRightWidth: 1,
+    borderRightColor: colors.border,
+    borderLeftWidth: 0,
+    padding: 18,
     gap: 8
   },
   menuTitle: {
@@ -401,9 +408,9 @@ const styles = StyleSheet.create({
     marginBottom: 8
   },
   menuItem: {
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 12,
     backgroundColor: colors.surfaceAlt
   },
   menuItemText: {

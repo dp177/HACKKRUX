@@ -1,5 +1,7 @@
 import React, { useEffect } from 'react';
 import { ActivityIndicator, Platform, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts, Inter_400Regular, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 import AuthScreen from './src/screens/auth/AuthScreen';
 import AppTabs from './src/navigation/AppTabs';
@@ -64,10 +66,14 @@ export default function App() {
   }
 
   return (
-    <View style={styles.root}>
-      <StatusBar barStyle="dark-content" />
-      {isAuthenticated ? <AppTabs /> : <AuthScreen />}
-    </View>
+    <GestureHandlerRootView style={styles.root}>
+      <SafeAreaProvider>
+        <View style={styles.root}>
+          <StatusBar barStyle="dark-content" />
+          {isAuthenticated ? <AppTabs /> : <AuthScreen />}
+        </View>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

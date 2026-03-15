@@ -33,9 +33,29 @@ import DoctorSelector from '../../features/care/DoctorSelector';
 import HospitalDetailCard from '../../features/care/HospitalDetailCard';
 import SlotSelector from '../../features/care/SlotSelector';
 import TriageForm from '../../features/care/TriageForm';
+import TopBar from '../../components/home/TopBar';
+import HospitalCard from '../../components/home/HospitalCard';
+import AppointmentPreviewCard from '../../components/home/AppointmentPreviewCard';
+import DateChip from '../../components/home/DateChip';
+import FlowProgressBar from '../../components/home/FlowProgressBar';
 import { useAuthStore } from '../../store/authStore';
 import { usePatientFlowStore } from '../../store/patientFlowStore';
 import { colors, radii, spacing } from '../../theme/tokens';
+
+const BOOKING_STEPS = [
+  { key: 'department', label: 'Department' },
+  { key: 'doctor', label: 'Doctor' },
+  { key: 'date', label: 'Date' },
+  { key: 'slot', label: 'Slot' },
+  { key: 'booking_details', label: 'Details' },
+  { key: 'result', label: 'Submit' }
+];
+
+const QUEUE_STEPS = [
+  { key: 'department', label: 'Department' },
+  { key: 'triage', label: 'Triage' },
+  { key: 'result', label: 'Submit' }
+];
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -67,22 +87,6 @@ function parseHospitalIdFromQr(rawValue) {
   }
 
   return null;
-}
-
-function Header({ title, onBack }) {
-  return (
-    <View style={styles.header}>
-      {onBack ? (
-        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={20} color={colors.text} />
-        </TouchableOpacity>
-      ) : (
-        <View style={styles.backBtnPlaceholder} />
-      )}
-      <Text style={styles.headerTitle}>{title}</Text>
-      <View style={styles.backBtnPlaceholder} />
-    </View>
-  );
 }
 
 export default function HomeScreen() {
@@ -133,6 +137,7 @@ export default function HomeScreen() {
   const [upcomingPreviewLoading, setUpcomingPreviewLoading] = useState(false);
   const [triageOutcome, setTriageOutcome] = useState(null);
   const [triageInputMode, setTriageInputMode] = useState('text');
+  const [searchFocused, setSearchFocused] = useState(false);
 
   const greetingName = user?.name?.split(' ')[0] || 'Patient';
 
@@ -575,6 +580,37 @@ export default function HomeScreen() {
     restartFlow();
   }
 
+  function goToAppointmentsTab() {
+    DeviceEventEmitter.emit('app:switch-tab', { tab: 'Appointments' });
+    restartFlow();
+  }
+
+  function openMenu() {
+    DeviceEventEmitter.emit('app:open-menu');
+  }
+
+  function openProfile() {
+    DeviceEventEmitter.emit('app:open-profile');
+  }
+
+  function getNormalizedProgressRoute(routeName) {
+    if (routeName === 'no_doctors') return 'doctor';
+    if (routeName === 'no_slots') return 'slot';
+    if (routeName === 'no_departments') return 'department';
+    return routeName;
+  }
+
+  function renderFlowProgressBar() {
+    const visibleRoutes = new Set(['department', 'doctor', 'date', 'slot', 'triage', 'booking_details', 'no_doctors', 'no_slots', 'no_departments', 'result']);
+    if (!visibleRoutes.has(currentRoute)) return null;
+
+    const steps = flowMode === 'booking' ? BOOKING_STEPS : QUEUE_STEPS;
+    const normalized = getNormalizedProgressRoute(currentRoute);
+    const foundIndex = steps.findIndex((step) => step.key === normalized);
+    const activeIndex = foundIndex >= 0 ? foundIndex : 0;
+    return <FlowProgressBar steps={steps} activeIndex={activeIndex} />;
+  }
+
   const filteredHospitals = useMemo(() => {
     if (!query.trim()) return hospitals;
     const q = query.toLowerCase();
@@ -593,7 +629,14 @@ export default function HomeScreen() {
   if (currentRoute === 'hospitals') {
     return (
       <View style={styles.root}>
-        <Header title="Home" />
+        <TopBar
+          mode="home"
+          greeting={`Hello, ${greetingName}`}
+          subtitle="Welcome back. Find care faster with one smooth flow."
+          onMenu={openMenu}
+          onProfile={openProfile}
+          avatarLabel={user?.name || 'Patient'}
+        />
         <FlatList
           style={styles.root}
           contentContainerStyle={styles.content}
@@ -601,63 +644,52 @@ export default function HomeScreen() {
           scrollEventThrottle={16}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => loadHospitals(true)} />}
           ListHeaderComponent={(
-            <LinearGradient colors={['#d8efe9', '#f3f8f6']} style={styles.hero}>
-              <Text style={styles.hello}>Hello, {greetingName}</Text>
-              <Text style={styles.heroSubtitle}>Search hospitals, then move through each step as a dedicated route.</Text>
+            <LinearGradient colors={['#e8f2ef', '#f4f8f7', '#f4f8f7']} style={styles.hero}>
+              <Text style={styles.hello}>My Care List</Text>
+              <Text style={styles.heroSubtitle}>Discover hospitals, manage active care, and continue your journey in one place.</Text>
 
-              <View style={styles.searchWrap}>
+              <View style={[styles.searchWrap, searchFocused && styles.searchWrapFocused]}>
                 <Ionicons name="search" size={18} color="#6d7f88" />
                 <TextInput
                   value={query}
                   onChangeText={setQuery}
-                  placeholder="Search hospitals"
+                  placeholder="Search hospital or city"
                   placeholderTextColor="#88a0ab"
                   style={styles.searchInput}
+                  onFocus={() => setSearchFocused(true)}
+                  onBlur={() => setSearchFocused(false)}
                 />
+                <TouchableOpacity style={styles.scanInlineBtn} onPress={openQrScanner} activeOpacity={0.85}>
+                  <Ionicons name="qr-code-outline" size={17} color="#fff" />
+                </TouchableOpacity>
               </View>
 
-              <Text style={styles.orText}>OR</Text>
-              <TouchableOpacity style={styles.scanBtn} onPress={openQrScanner} activeOpacity={0.85}>
-                <Ionicons name="qr-code-outline" size={18} color="#fff" />
-                <Text style={styles.scanBtnText}>Scan Hospital QR</Text>
-              </TouchableOpacity>
+              <AppointmentPreviewCard
+                loading={upcomingPreviewLoading}
+                upcomingPreview={upcomingPreview}
+                onRefresh={loadUpcomingPreview}
+              />
 
-              <View style={styles.upcomingPreviewCard}>
-                <View style={styles.upcomingPreviewHead}>
-                  <Text style={styles.upcomingPreviewTitle}>Upcoming Appointment</Text>
-                  <TouchableOpacity onPress={loadUpcomingPreview}>
-                    <Text style={styles.upcomingPreviewRefresh}>Refresh</Text>
-                  </TouchableOpacity>
-                </View>
-                {upcomingPreviewLoading ? (
-                  <Text style={styles.upcomingPreviewMeta}>Loading...</Text>
-                ) : upcomingPreview ? (
-                  <>
-                    <Text style={styles.upcomingPreviewDoctor}>{upcomingPreview.doctorName || 'Doctor'}</Text>
-                    <Text style={styles.upcomingPreviewMeta}>{upcomingPreview.hospitalName || 'Hospital'}</Text>
-                    <Text style={styles.upcomingPreviewMeta}>{upcomingPreview.date} • {upcomingPreview.time || '-'}</Text>
-                  </>
-                ) : (
-                  <Text style={styles.upcomingPreviewMeta}>No upcoming appointments. Book from a hospital card below.</Text>
-                )}
-              </View>
-
-              <Text style={styles.sectionTitle}>Hospitals</Text>
+              <Text style={styles.sectionTitle}>Recent Hospitals</Text>
+              <Text style={styles.sectionSubtitle}>Tap a hospital to continue with booking or live queue.</Text>
             </LinearGradient>
           )}
           data={filteredHospitals}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={[styles.hospitalCard, hospitalLoadingId === item.id && styles.hospitalCardDisabled]}
-              activeOpacity={0.9}
+          ListEmptyComponent={(
+            <View style={styles.emptyListWrap}>
+              <Ionicons name="search-outline" size={28} color={colors.muted} />
+              <Text style={styles.emptyListTitle}>No hospitals found</Text>
+              <Text style={styles.emptyListText}>Try a different search term or clear filters.</Text>
+            </View>
+          )}
+          renderItem={({ item, index }) => (
+            <HospitalCard
+              item={item}
+              index={index}
               onPress={() => handleSelectHospital(item)}
               disabled={hospitalLoadingId === item.id}
-            >
-              <Text style={styles.hospitalTitle}>{item.name}</Text>
-              <Text style={styles.hospitalMeta}>{item.city || 'City not set'} • {item.state || 'State not set'}</Text>
-              <Text style={styles.hospitalStats}>{item.departmentCount || 0} departments • {item.doctorCount || 0} doctors</Text>
-            </TouchableOpacity>
+            />
           )}
         />
       </View>
@@ -668,7 +700,7 @@ export default function HomeScreen() {
     const permissionGranted = Boolean(cameraPermission?.granted);
     return (
       <View style={styles.root}>
-        <Header title="Scan Hospital QR" onBack={popRoute} />
+        <TopBar title="Scan Hospital QR" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
         <View style={styles.scannerWrap}>
           {permissionGranted ? (
             <CameraView
@@ -700,7 +732,8 @@ export default function HomeScreen() {
   if (currentRoute === 'hospital_detail') {
     return (
       <View style={styles.root}>
-        <Header title="Hospital Details" onBack={popRoute} />
+        <TopBar title="Hospital Details" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <View style={styles.contentPage}>
           <HospitalDetailCard
             hospital={selectedHospital}
@@ -716,7 +749,8 @@ export default function HomeScreen() {
   if (currentRoute === 'department') {
     return (
       <View style={styles.root}>
-        <Header title="Select Department" onBack={popRoute} />
+        <TopBar title="Select Department" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <View style={styles.contentPage}>
           <DepartmentSelector
             departments={hospitalDepartments}
@@ -731,7 +765,8 @@ export default function HomeScreen() {
   if (currentRoute === 'doctor') {
     return (
       <View style={styles.root}>
-        <Header title="Select Doctor" onBack={popRoute} />
+        <TopBar title="Select Doctor" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <View style={styles.contentPage}>
           <DoctorSelector
             doctors={doctors}
@@ -747,27 +782,34 @@ export default function HomeScreen() {
     const dateOptions = getUpcomingDates(7);
     return (
       <View style={styles.root}>
-        <Header title="Select Date" onBack={popRoute} />
+        <TopBar title="Select Date" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <View style={styles.contentPage}>
           <View style={styles.dateCard}>
             <Text style={styles.dateTitle}>Choose appointment date</Text>
             <Text style={styles.dateSub}>Scheduling is available for the next 7 days.</Text>
-            <View style={styles.dateWrap}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.dateWrap}
+            >
               {dateOptions.map((date) => {
                 const active = selectedDate === date;
                 const labels = formatDayLabel(date);
                 return (
-                  <TouchableOpacity
+                  <DateChip
                     key={date}
-                    style={[styles.dateChip, active && styles.dateChipActive]}
+                    day={labels.day}
+                    monthDate={labels.monthDate}
+                    active={active}
                     onPress={() => handleSelectDate(date)}
-                  >
-                    <Text style={[styles.dateChipDay, active && styles.dateChipTextActive]}>{labels.day}</Text>
-                    <Text style={[styles.dateChipText, active && styles.dateChipTextActive]}>{labels.monthDate}</Text>
-                  </TouchableOpacity>
+                  />
                 );
               })}
-            </View>
+            </ScrollView>
+            {loadingDate ? (
+              <Text style={styles.dateLoadingText}>Loading slots for selected date...</Text>
+            ) : null}
           </View>
         </View>
       </View>
@@ -777,7 +819,8 @@ export default function HomeScreen() {
   if (currentRoute === 'slot') {
     return (
       <View style={styles.root}>
-        <Header title="Select Time Slot" onBack={popRoute} />
+        <TopBar title="Select Time Slot" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <View style={styles.contentPage}>
           <SlotSelector
             slots={slots}
@@ -798,7 +841,8 @@ export default function HomeScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
       >
-        <Header title="AI Triage" onBack={popRoute} />
+        <TopBar title="AI Triage" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
@@ -824,7 +868,8 @@ export default function HomeScreen() {
   if (currentRoute === 'booking_details') {
     return (
       <View style={styles.root}>
-        <Header title="Confirm Booking" onBack={popRoute} />
+        <TopBar title="Confirm Booking" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <View style={styles.contentPage}>
           <View style={styles.bookingCard}>
             <Text style={styles.bookingTitle}>Simple booking details</Text>
@@ -861,7 +906,8 @@ export default function HomeScreen() {
 
     return (
       <View style={styles.root}>
-        <Header title="Unavailable" onBack={popRoute} />
+        <TopBar title="Unavailable" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <View style={styles.contentPage}>
           <View style={styles.fallbackCard}>
             <Ionicons name="alert-circle-outline" size={34} color={colors.accent} />
@@ -888,7 +934,8 @@ export default function HomeScreen() {
   if (currentRoute === 'no_departments') {
     return (
       <View style={styles.root}>
-        <Header title="Unavailable" onBack={popRoute} />
+        <TopBar title="Unavailable" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <View style={styles.contentPage}>
           <View style={styles.fallbackCard}>
             <Ionicons name="business-outline" size={34} color={colors.accent} />
@@ -906,7 +953,8 @@ export default function HomeScreen() {
   if (currentRoute === 'no_slots') {
     return (
       <View style={styles.root}>
-        <Header title="Unavailable" onBack={popRoute} />
+        <TopBar title="Unavailable" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+        {renderFlowProgressBar()}
         <View style={styles.contentPage}>
           <View style={styles.fallbackCard}>
             <Ionicons name="time-outline" size={34} color={colors.accent} />
@@ -928,7 +976,8 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.root}>
-      <Header title="Submission Result" onBack={popRoute} />
+      <TopBar title="Submission Result" onBack={popRoute} onProfile={openProfile} avatarLabel={user?.name || 'Patient'} />
+      {renderFlowProgressBar()}
       <ScrollView
         style={styles.root}
         contentContainerStyle={styles.contentPage}
@@ -936,6 +985,9 @@ export default function HomeScreen() {
         scrollEventThrottle={16}
       >
         <View style={styles.resultCard}>
+          <View style={styles.resultIconWrap}>
+            <Ionicons name="checkmark-circle" size={52} color={colors.primaryDark} />
+          </View>
           <Text style={styles.resultTitle}>{flowMode === 'booking' ? 'Booking Complete' : 'Triage Submitted Successfully'}</Text>
           {flowMode !== 'booking' ? <Text style={styles.resultSuccess}>AI analysis complete. You are now in the active queue.</Text> : null}
           <Text style={styles.resultText}>Hospital: {selectedHospital?.name}</Text>
@@ -951,12 +1003,16 @@ export default function HomeScreen() {
           ) : null}
 
           {flowMode !== 'booking' ? (
-            <TouchableOpacity style={styles.queueBtn} onPress={goToActiveQueueTab}>
+            <TouchableOpacity style={styles.queueBtn} onPress={goToActiveQueueTab} activeOpacity={0.86}>
               <Text style={styles.queueBtnText}>Go To Active Queue</Text>
             </TouchableOpacity>
-          ) : null}
+          ) : (
+            <TouchableOpacity style={styles.queueBtn} onPress={goToAppointmentsTab} activeOpacity={0.86}>
+              <Text style={styles.queueBtnText}>Go To Appointments</Text>
+            </TouchableOpacity>
+          )}
 
-          <TouchableOpacity style={styles.restartBtn} onPress={restartFlow} disabled={submitting}>
+          <TouchableOpacity style={styles.restartBtn} onPress={restartFlow} disabled={submitting} activeOpacity={0.86}>
             <Text style={styles.restartBtnText}>Start New Request</Text>
           </TouchableOpacity>
         </View>
@@ -967,113 +1023,94 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
-  content: { paddingBottom: spacing.xl },
-  contentPage: { paddingTop: spacing.md, paddingBottom: spacing.xl },
-  scrollContent: { paddingTop: spacing.md, paddingBottom: spacing.xl * 2, flexGrow: 1 },
-  header: {
-    height: 56,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+  content: { paddingBottom: 140, paddingTop: spacing.xs },
+  contentPage: { paddingTop: spacing.md, paddingBottom: 140 },
+  scrollContent: { paddingTop: spacing.md, paddingBottom: 140, flexGrow: 1 },
+  loaderWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
+  loaderText: { marginTop: spacing.sm, fontFamily: 'Inter_400Regular', color: colors.muted },
+  hero: {
+    marginHorizontal: spacing.lg,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.lg,
+    marginBottom: spacing.lg
+  },
+  hello: { fontFamily: 'Inter_700Bold', color: colors.text, fontSize: 28 },
+  heroSubtitle: { marginTop: 6, fontFamily: 'Inter_400Regular', color: colors.muted, marginBottom: spacing.md, lineHeight: 20 },
+  searchWrap: {
     backgroundColor: '#fff',
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    minHeight: 52,
     flexDirection: 'row',
+    alignItems: 'center'
+  },
+  searchWrapFocused: {
+    borderColor: colors.primary
+  },
+  searchInput: { flex: 1, marginLeft: 8, paddingVertical: 12, fontFamily: 'Inter_400Regular', color: colors.text },
+  scanInlineBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.primary,
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
+    marginLeft: spacing.xs
+  },
+  sectionTitle: { marginTop: spacing.lg, marginBottom: 2, fontFamily: 'Inter_700Bold', color: colors.text, fontSize: 22 },
+  sectionSubtitle: { marginBottom: spacing.sm, fontFamily: 'Inter_400Regular', color: colors.muted, fontSize: 12 },
+  emptyListWrap: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    paddingVertical: spacing.lg,
     paddingHorizontal: spacing.md
   },
-  headerTitle: {
+  emptyListTitle: {
+    marginTop: spacing.xs,
     fontFamily: 'Inter_700Bold',
     color: colors.text,
     fontSize: 16
   },
-  backBtn: {
-    width: 34,
-    height: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 17,
-    backgroundColor: '#f2f7f5'
-  },
-  backBtnPlaceholder: {
-    width: 34,
-    height: 34
-  },
-  loaderWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  loaderText: { marginTop: spacing.sm, fontFamily: 'Inter_400Regular', color: colors.muted },
-  hero: { paddingHorizontal: spacing.lg, paddingTop: spacing.xl + 10, paddingBottom: spacing.lg },
-  hello: { fontFamily: 'Inter_700Bold', color: colors.text, fontSize: 28 },
-  heroSubtitle: { marginTop: 6, fontFamily: 'Inter_400Regular', color: colors.muted, marginBottom: spacing.md },
-  orText: {
-    marginTop: spacing.md,
-    marginBottom: spacing.sm,
-    textAlign: 'center',
+  emptyListText: {
+    marginTop: 4,
+    fontFamily: 'Inter_400Regular',
     color: colors.muted,
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 12,
-    letterSpacing: 1
+    textAlign: 'center'
   },
-  scanBtn: {
-    backgroundColor: colors.primary,
-    borderRadius: radii.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 8,
-    paddingVertical: 12
-  },
-  scanBtnText: {
-    color: '#fff',
-    fontFamily: 'Inter_700Bold'
-  },
-  upcomingPreviewCard: {
-    marginTop: spacing.md,
-    borderRadius: radii.md,
+  resultCard: {
+    marginHorizontal: spacing.lg,
+    backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: colors.border,
-    backgroundColor: '#fff',
-    padding: spacing.md
+    borderRadius: radii.lg,
+    padding: spacing.lg,
+    alignItems: 'center'
   },
-  upcomingPreviewHead: {
-    flexDirection: 'row',
+  resultIconWrap: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    backgroundColor: '#dbefe9',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6
+    justifyContent: 'center',
+    marginBottom: spacing.md
   },
-  upcomingPreviewTitle: {
-    fontFamily: 'Inter_700Bold',
-    color: colors.text
-  },
-  upcomingPreviewRefresh: {
-    fontFamily: 'Inter_600SemiBold',
-    color: colors.primaryDark,
-    fontSize: 12
-  },
-  upcomingPreviewDoctor: {
-    fontFamily: 'Inter_600SemiBold',
-    color: colors.text,
-    marginBottom: 2
-  },
-  upcomingPreviewMeta: {
-    fontFamily: 'Inter_400Regular',
-    color: colors.muted
-  },
-  searchWrap: { backgroundColor: '#fff', borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center' },
-  searchInput: { flex: 1, marginLeft: 8, paddingVertical: 10, fontFamily: 'Inter_400Regular', color: colors.text },
-  sectionTitle: { marginHorizontal: spacing.lg, marginTop: spacing.lg, marginBottom: spacing.sm, fontFamily: 'Inter_700Bold', color: colors.text, fontSize: 20 },
-  hospitalCard: { marginHorizontal: spacing.lg, marginBottom: spacing.sm, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, padding: spacing.md },
-  hospitalCardDisabled: { opacity: 0.6 },
-  hospitalTitle: { fontFamily: 'Inter_600SemiBold', color: colors.text, fontSize: 16 },
-  hospitalMeta: { marginTop: 4, fontFamily: 'Inter_400Regular', color: colors.muted },
-  hospitalStats: { marginTop: 8, fontFamily: 'Inter_600SemiBold', color: colors.primaryDark, fontSize: 12 },
-  resultCard: { marginHorizontal: spacing.lg, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, padding: spacing.lg },
-  resultTitle: { fontFamily: 'Inter_700Bold', fontSize: 20, color: colors.text, marginBottom: spacing.sm },
-  resultSuccess: { fontFamily: 'Inter_600SemiBold', color: '#0f766e', marginBottom: spacing.sm },
-  resultText: { fontFamily: 'Inter_400Regular', color: colors.text, marginTop: 3 },
-  queueBtn: { marginTop: spacing.md, backgroundColor: colors.primaryDark, borderRadius: radii.md, alignItems: 'center', paddingVertical: 12 },
+  resultTitle: { fontFamily: 'Inter_700Bold', fontSize: 24, color: colors.text, marginBottom: spacing.sm, textAlign: 'center' },
+  resultSuccess: { fontFamily: 'Inter_600SemiBold', color: '#0f766e', marginBottom: spacing.sm, textAlign: 'center' },
+  resultText: { fontFamily: 'Inter_400Regular', color: colors.text, marginTop: 4, textAlign: 'center' },
+  queueBtn: { marginTop: spacing.lg, backgroundColor: colors.primaryDark, borderRadius: radii.pill, alignItems: 'center', paddingVertical: 14, width: '100%' },
   queueBtnText: { color: '#fff', fontFamily: 'Inter_700Bold' },
-  restartBtn: { marginTop: spacing.md, backgroundColor: colors.primary, borderRadius: radii.md, alignItems: 'center', paddingVertical: 12 },
+  restartBtn: { marginTop: spacing.sm, backgroundColor: colors.primary, borderRadius: radii.pill, alignItems: 'center', paddingVertical: 14, width: '100%' },
   restartBtnText: { color: '#fff', fontFamily: 'Inter_600SemiBold' },
-  overlay: { marginHorizontal: spacing.lg, marginTop: spacing.md, alignItems: 'center', gap: spacing.sm },
-  overlayText: { fontFamily: 'Inter_400Regular', color: colors.muted },
   fallbackCard: {
     marginHorizontal: spacing.lg,
     backgroundColor: '#fff',
@@ -1100,9 +1137,11 @@ const styles = StyleSheet.create({
   fallbackBtn: {
     marginTop: spacing.lg,
     backgroundColor: colors.primary,
-    borderRadius: radii.md,
-    paddingVertical: 12,
-    paddingHorizontal: 16
+    borderRadius: radii.pill,
+    paddingVertical: 13,
+    paddingHorizontal: 18,
+    minWidth: 180,
+    alignItems: 'center'
   },
   fallbackBtnText: {
     color: '#fff',
@@ -1125,40 +1164,17 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginBottom: spacing.md,
     fontFamily: 'Inter_400Regular',
-    color: colors.muted
+    color: colors.muted,
+    lineHeight: 20
   },
   dateWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm
+    gap: spacing.sm,
+    paddingRight: spacing.lg
   },
-  dateChip: {
-    minWidth: 88,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: '#fff',
-    alignItems: 'center'
-  },
-  dateChipActive: {
-    borderColor: colors.primary,
-    backgroundColor: '#e8f4f1'
-  },
-  dateChipDay: {
-    fontFamily: 'Inter_600SemiBold',
-    color: colors.muted,
-    fontSize: 12,
-    marginBottom: 2
-  },
-  dateChipText: {
-    fontFamily: 'Inter_700Bold',
-    color: colors.text,
-    fontSize: 14
-  },
-  dateChipTextActive: {
-    color: colors.primaryDark
+  dateLoadingText: {
+    marginTop: spacing.md,
+    fontFamily: 'Inter_400Regular',
+    color: colors.muted
   },
   bookingCard: {
     marginHorizontal: spacing.lg,
@@ -1194,19 +1210,19 @@ const styles = StyleSheet.create({
   bookingInput: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
     fontFamily: 'Inter_400Regular',
     color: colors.text,
     backgroundColor: '#fff'
   },
   bookingBtn: {
-    marginTop: spacing.md,
+    marginTop: spacing.lg,
     backgroundColor: colors.primary,
-    borderRadius: radii.md,
+    borderRadius: radii.pill,
     alignItems: 'center',
-    paddingVertical: 12
+    paddingVertical: 14
   },
   bookingBtnText: {
     color: '#fff',
