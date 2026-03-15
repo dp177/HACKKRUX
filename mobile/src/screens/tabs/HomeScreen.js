@@ -632,7 +632,7 @@ export default function HomeScreen() {
         <TopBar
           mode="home"
           greeting={`Hello, ${greetingName}`}
-          subtitle="Welcome back. Find care faster with one smooth flow."
+          subtitle="Welcome back."
           onMenu={openMenu}
           onProfile={openProfile}
           avatarLabel={user?.name || 'Patient'}

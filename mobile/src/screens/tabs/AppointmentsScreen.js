@@ -14,9 +14,11 @@ import { useAuthStore } from '../../store/authStore';
 import { colors, radii, spacing } from '../../theme/tokens';
 
 function formatDate(date) {
-  const parsed = new Date(`${date}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return date;
-  return parsed.toLocaleDateString('en-US', { day: '2-digit', month: 'short' });
+  // Remove unwanted 'T00:00:00.000Z' if present
+  const cleanDate = String(date).replace(/T00:00:00\.000Z/, '').replace(/T00:00:00/, '');
+  const parsed = new Date(cleanDate);
+  if (Number.isNaN(parsed.getTime())) return cleanDate;
+  return parsed.toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
 function formatTime(time) {

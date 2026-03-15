@@ -19,6 +19,7 @@ import QueueScreen from '../screens/tabs/QueueScreen';
 import AppointmentsScreen from '../screens/tabs/AppointmentsScreen';
 import HistoryScreen from '../screens/tabs/HistoryScreen';
 import ProfileScreen from '../screens/tabs/ProfileScreen';
+import HelpScreen from '../screens/tabs/HelpScreen';
 import TopBar from '../components/home/TopBar';
 import { useAuthStore } from '../store/authStore';
 import { colors } from '../theme/tokens';
@@ -196,7 +197,7 @@ export default function AppTabs() {
       return <PlaceholderScreen title="Settings" subtitle="Preferences, language and app options can be managed here." />;
     }
     if (auxScreen === 'Help') {
-      return <PlaceholderScreen title="Help" subtitle="Support and FAQ are available here." />;
+      return <HelpScreen />;
     }
     if (auxScreen === 'Profile') {
       return <ProfileScreen />;

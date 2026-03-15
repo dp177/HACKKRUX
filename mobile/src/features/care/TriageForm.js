@@ -15,7 +15,7 @@ import { colors, radii, spacing } from '../../theme/tokens';
 
 const TRIAGE_COMPLETE_TOKEN = '[TRIAGE_COMPLETE]';
 const FIXED_BOOTSTRAP_QUESTION_COUNT = 2;
-const MAX_DYNAMIC_FOLLOWUP_QUESTIONS = 4;
+const MAX_DYNAMIC_FOLLOWUP_QUESTIONS = 2;
 const BREATHING_OPTIONS = ['normal', 'mild', 'severe'];
 const COMORBIDITY_OPTIONS = ['Diabetes', 'Hypertension', 'Heart disease', 'Asthma', 'COPD', 'Kidney disease'];
 
@@ -334,7 +334,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>Analyzing with AI\u2026</Text>
+        <Text style={styles.loadingText}>Analyzing with AI</Text>
       </View>
     );
   }
@@ -387,7 +387,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
         {answerError ? <Text style={styles.errorText}>{answerError}</Text> : null}
 
         <TouchableOpacity style={styles.btn} onPress={handleTextAnswerNext} disabled={askingNext}>
-          {askingNext ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Next \u2192</Text>}
+          {askingNext ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Next</Text>}
         </TouchableOpacity>
       </View>
     );
@@ -490,7 +490,7 @@ export default function TriageForm({ patientId, token, availableDepartments, dep
       {initError ? <Text style={styles.errorText}>{initError}</Text> : null}
 
       <TouchableOpacity style={styles.btn} onPress={handleInitialSubmit} disabled={askingNext}>
-        {askingNext ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Start Dynamic Questions \u2192</Text>}
+        {askingNext ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Start Dynamic Questions</Text>}
       </TouchableOpacity>
     </View>
   );
