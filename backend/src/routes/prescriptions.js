@@ -6,6 +6,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
+const { requirePatientAccess } = require('../middleware/patientAccess');
 const { Prescription, Queue, Patient, Doctor } = require('../models');
 const { authenticateDoctor, authenticatePatient } = require('../middleware/auth');
 const {
@@ -150,7 +151,7 @@ router.post('/', authenticateDoctor, async (req, res) => {
   }
 });
 
-router.get('/patient/:patientId', authenticateDoctor, async (req, res) => {
+router.get('/patient/:patientId', authenticateDoctor, requirePatientAccess(), async (req, res) => {
   try {
     const { patientId } = req.params;
     if (!mongoose.Types.ObjectId.isValid(patientId)) {
@@ -395,7 +396,7 @@ router.get('/:prescriptionId', authenticateDoctor, async (req, res) => {
   }
 });
 
-router.get('/patient/:patientId/timeline', authenticateDoctor, async (req, res) => {
+router.get('/patient/:patientId/timeline', authenticateDoctor, requirePatientAccess(), async (req, res) => {
   try {
     const { patientId } = req.params;
     if (!mongoose.Types.ObjectId.isValid(patientId)) {

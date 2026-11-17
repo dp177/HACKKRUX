@@ -636,7 +636,7 @@ router.post('/analyze', authenticateAny, upload.single('file'), async (req, res)
       aiSeverity,
       aiAnalysis: rawAnalyzeOutput.ai_analysis || normalizedAiAnalysis,
       analyzeOutput: rawAnalyzeOutput,
-      inputMode,
+      inputMode: inputMode || 'text',
       conversationHistory,
       queuePosition: null
     });

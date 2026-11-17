@@ -5,6 +5,7 @@
 
 const express = require('express');
 const router = express.Router();
+const { requirePatientAccess } = require('../middleware/patientAccess');
 const { Visit, Patient, Doctor, Appointment, TriageRecord, VitalSignRecord } = require('../models');
 const { authenticateDoctor, authenticatePatient, authenticateAny } = require('../middleware/auth');
 
@@ -339,7 +340,7 @@ router.post('/:visitId/vitals', authenticateDoctor, async (req, res) => {
 // GET ALL VISITS for Patient (with filters)
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/patient/:patientId/all', authenticateAny, async (req, res) => {
+router.get('/patient/:patientId/all', authenticateAny, requirePatientAccess(), async (req, res) => {
   try {
     const { patientId } = req.params;
     const { limit = 20, offset = 0 } = req.query;

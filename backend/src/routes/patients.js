@@ -5,6 +5,9 @@
 
 const express = require('express');
 const router = express.Router();
+const { authenticateAny } = require('../middleware/auth');
+const { requirePatientAccess } = require('../middleware/patientAccess');
+const { adminBasicAuth } = require('../middleware/adminBasicAuth');
 const { Patient, Visit, VitalSignRecord, TriageRecord, Appointment } = require('../models');
 const { authenticatePatient } = require('../middleware/auth');
 
@@ -149,7 +152,7 @@ router.get('/:patientId/dashboard', authenticatePatient, async (req, res) => {
 // GET Patient Profile (Basic Info)
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/:patientId', async (req, res) => {
+router.get('/:patientId', authenticateAny, requirePatientAccess(), async (req, res) => {
   try {
     const patient = await Patient.findById(req.params.patientId).select('-passwordHash');
     
@@ -171,6 +174,9 @@ router.get('/:patientId', async (req, res) => {
 router.put('/:patientId', authenticatePatient, async (req, res) => {
   try {
     const { patientId } = req.params;
+    if (String(req.userId) !== String(patientId)) {
+      return res.status(403).json({ error: 'Access denied: not your record' });
+    }
     const updates = req.body;
     
     // Don't allow updating sensitive fields via this route
@@ -280,7 +286,7 @@ router.get('/:patientId/vitals', authenticatePatient, async (req, res) => {
 // CREATE Patient (Registration)
 // ═══════════════════════════════════════════════════════════════
 
-router.post('/', async (req, res) => {
+router.post('/', adminBasicAuth, async (req, res) => {
   try {
     const patientData = req.body;
     
@@ -314,7 +320,7 @@ router.post('/', async (req, res) => {
 // SEARCH Patients
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/search', async (req, res) => {
+router.get('/search', adminBasicAuth, async (req, res) => {
   try {
     const { query, type = 'name' } = req.query;
     

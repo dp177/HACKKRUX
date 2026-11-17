@@ -7,6 +7,9 @@ const jwt = require('jsonwebtoken');
 const { Doctor, Patient, User } = require('../models');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  throw new Error('FATAL: JWT_SECRET must be set in production - refusing to start with the development default');
+}
 const JWT_EXPIRY = '7d'; // 7 days
 
 // ═══════════════════════════════════════════════════════════════

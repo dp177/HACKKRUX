@@ -5,6 +5,7 @@
 
 const express = require('express');
 const router = express.Router();
+const { adminBasicAuth } = require('../middleware/adminBasicAuth');
 const bcrypt = require('bcryptjs');
 const { OAuth2Client } = require('google-auth-library');
 const { Doctor, Patient, Department, User } = require('../models');
@@ -281,7 +282,7 @@ router.post('/register/patient', async (req, res) => {
 // DOCTOR REGISTRATION
 // ═══════════════════════════════════════════════════════════════
 
-router.post('/register/doctor', async (req, res) => {
+router.post('/register/doctor', adminBasicAuth, async (req, res) => {
   try {
     const {
       firstName,

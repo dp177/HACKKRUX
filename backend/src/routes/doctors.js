@@ -5,6 +5,14 @@
 
 const express = require('express');
 const router = express.Router();
+// IDOR guard: an authenticated doctor may only operate on their own record
+function requireSelfDoctor(req, res, next) {
+  if (String(req.params.doctorId) !== String(req.doctor.id)) {
+    return res.status(403).json({ error: 'Access denied: cannot act on another doctor\'s record' });
+  }
+  next();
+}
+
 const {
   Doctor,
   Patient,
@@ -161,7 +169,7 @@ router.post('/upload-signature', authenticateDoctor, (req, res, next) => {
 // DOCTOR DASHBOARD - Today's Schedule & Queue
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
+router.get('/:doctorId/dashboard', authenticateDoctor, requireSelfDoctor, async (req, res) => {
   try {
     const {doctorId } = req.params;
     const search = String(req.query.search || '').trim().toLowerCase();
@@ -383,10 +391,16 @@ router.get('/:doctorId/dashboard', authenticateDoctor, async (req, res) => {
 // Shows complete medical summary for doctor
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/:doctorId/patient-preview/:patientId', authenticateDoctor, async (req, res) => {
+router.get('/:doctorId/patient-preview/:patientId', authenticateDoctor, requireSelfDoctor, async (req, res) => {
   try {
     const { patientId } = req.params;
-    
+
+    // Isolation: the patient must have a relationship with the requesting doctor's hospital
+    const { patientHasHospitalRelationship } = require('../middleware/patientAccess');
+    if (!(await patientHasHospitalRelationship(patientId, req.doctor.hospitalId))) {
+      return res.status(403).json({ error: 'Access denied: patient has no record at your hospital' });
+    }
+
     // Get patient core profile
     const patient = await Patient.findById(patientId);
     
@@ -620,7 +634,7 @@ router.get('/:doctorId/patient-preview/:patientId', authenticateDoctor, async (r
 // CALL NEXT PATIENT - Integration with Python Queue
 // ═══════════════════════════════════════════════════════════════
 
-router.post('/:doctorId/call-next', authenticateDoctor, async (req, res) => {
+router.post('/:doctorId/call-next', authenticateDoctor, requireSelfDoctor, async (req, res) => {
   try {
     const { doctorId } = req.params;
     if (!ensureDoctorAccess(req, doctorId)) {
@@ -662,7 +676,7 @@ router.post('/:doctorId/call-next', authenticateDoctor, async (req, res) => {
   }
 });
 
-router.post('/:doctorId/end-consultation', authenticateDoctor, async (req, res) => {
+router.post('/:doctorId/end-consultation', authenticateDoctor, requireSelfDoctor, async (req, res) => {
   try {
     const { doctorId } = req.params;
     if (!ensureDoctorAccess(req, doctorId)) {
@@ -847,7 +861,7 @@ router.post('/schedule', authenticateDoctor, async (req, res) => {
   }
 });
 
-router.get('/:doctorId/schedule', authenticateDoctor, async (req, res) => {
+router.get('/:doctorId/schedule', authenticateDoctor, requireSelfDoctor, async (req, res) => {
   try {
     const { doctorId } = req.params;
     const { date } = req.query;
@@ -870,7 +884,7 @@ router.get('/:doctorId/schedule', authenticateDoctor, async (req, res) => {
   }
 });
 
-router.delete('/:doctorId/schedule', authenticateDoctor, async (req, res) => {
+router.delete('/:doctorId/schedule', authenticateDoctor, requireSelfDoctor, async (req, res) => {
   try {
     const { doctorId } = req.params;
     const { date } = req.query;
@@ -970,7 +984,7 @@ router.post('/break', authenticateDoctor, async (req, res) => {
   }
 });
 
-router.get('/:doctorId/breaks', authenticateDoctor, async (req, res) => {
+router.get('/:doctorId/breaks', authenticateDoctor, requireSelfDoctor, async (req, res) => {
   try {
     const { doctorId } = req.params;
     const { date } = req.query;
@@ -1276,7 +1290,7 @@ router.get('/:doctorId/slots', async (req, res) => {
 // DOCTOR PATIENT HISTORY (visited/treated patients)
 // ═══════════════════════════════════════════════════════════════
 
-router.get('/:doctorId/patients/history', authenticateDoctor, async (req, res) => {
+router.get('/:doctorId/patients/history', authenticateDoctor, requireSelfDoctor, async (req, res) => {
   try {
     const { doctorId } = req.params;
     const limit = Math.max(1, Math.min(Number(req.query.limit || 100), 500));
@@ -1444,7 +1458,7 @@ router.get('/:doctorId/patients/history', authenticateDoctor, async (req, res) =
 // UPDATE Doctor Availability
 // ═══════════════════════════════════════════════════════════════
 
-router.put('/:doctorId/availability', authenticateDoctor, async (req, res) => {
+router.put('/:doctorId/availability', authenticateDoctor, requireSelfDoctor, async (req, res) => {
   try {
     const { doctorId } = req.params;
     const { isAvailableToday, availableSlots } = req.body;
@@ -1518,7 +1532,7 @@ router.get('/:doctorId', async (req, res) => {
 // CREATE Doctor (Registration)
 // ═══════════════════════════════════════════════════════════════
 
-router.post('/', async (req, res) => {
+router.post('/', require('../middleware/adminBasicAuth').adminBasicAuth, async (req, res) => {
   try {
     const doctorData = req.body;
     

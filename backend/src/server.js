@@ -70,12 +70,16 @@ app.use(cors({
   credentials: true
 }));
 
-// Rate limiting
-// const limiter = rateLimit({
-//   windowMs: 15 * 60 * 1000, // 15 minutes
-//   max: 100 // limit each IP to 100 requests per windowMs
-// });
-// app.use('/api/', limiter);
+// Rate limiting (auth + webhook endpoints; restored for production hardening)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts, please try again later' }
+});
+app.use('/api/auth', authLimiter);
+app.use('/api/v1/whatsapp-booking', authLimiter);
 
 // Body parsing
 app.use(express.json());

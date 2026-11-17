@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhatsApp Flow Simulator (Demo) - Jeeva</title>
+<style>
+  body { font-family: system-ui, sans-serif; background:#0b141a; color:#e9edef; margin:0; }
+  header { background:#202c33; padding:12px 16px; }
+  header h1 { font-size:16px; margin:0; }
+  .banner { background:#7c4a03; color:#ffd58a; padding:10px 16px; font-size:13px; line-height:1.5; }
+  .config { background:#111b21; padding:10px 16px; display:flex; gap:8px; flex-wrap:wrap; border-bottom:1px solid #222d34; }
+  .config input { background:#2a3942; border:0; color:#e9edef; padding:8px; border-radius:6px; font-size:13px; }
+  .config input[name=base] { flex:2; min-width:220px; }
+  .config input[name=from] { flex:1; min-width:140px; }
+  #chat { padding:16px; display:flex; flex-direction:column; gap:8px; min-height:50vh; }
+  .msg { max-width:75%; padding:8px 12px; border-radius:8px; white-space:pre-wrap; font-size:14px; line-height:1.4; }
+  .me { align-self:flex-end; background:#005c4b; }
+  .bot { align-self:flex-start; background:#202c33; }
+  .sys { align-self:center; color:#8696a0; font-size:12px; }
+  form { display:flex; gap:8px; padding:12px 16px; background:#202c33; position:sticky; bottom:0; }
+  form input { flex:1; background:#2a3942; border:0; color:#e9edef; padding:10px; border-radius:8px; }
+  form button { background:#00a884; border:0; color:#fff; padding:10px 18px; border-radius:8px; cursor:pointer; }
+</style>
+</head>
+<body>
+<header><h1>Jeeva WhatsApp Booking - Flow Simulator</h1></header>
+<div class="banner"><strong>SIMULATION - NOT REAL WHATSAPP.</strong> This page exercises the backend's Twilio webhook endpoint directly with synthetic data. Messages are <u>not</u> delivered over WhatsApp and no real phone number is involved. Live WhatsApp delivery requires a Twilio or Meta sender account.</div>
+<div class="config">
+  <input name="base" placeholder="Backend API base, e.g. http://localhost:5000/api" value="">
+  <input name="from" placeholder="Synthetic sender" value="+919999000111">
+</div>
+<div id="chat"><div class="sys">Send START to begin a simulated booking conversation.</div></div>
+<form id="f"><input id="t" autocomplete="off" placeholder="Type a message (START, symptoms, choices...)"><button>Send</button></form>
+<script>
+const chat = document.getElementById('chat');
+const baseInput = document.querySelector('input[name=base]');
+baseInput.value = localStorage.getItem('simBase') || (location.origin.includes('localhost') ? 'http://localhost:5000/api' : location.origin.replace(/:\d+$/, ':5000') + '/api');
+const fromInput = document.querySelector('input[name=from]');
+function add(cls, text) { const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text; chat.appendChild(d); d.scrollIntoView(); }
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const t = document.getElementById('t'); const text = t.value.trim(); if (!text) return;
+  t.value = ''; add('me', text);
+  localStorage.setItem('simBase', baseInput.value);
+  try {
+    const res = await fetch(baseInput.value.replace(/\/$/, '') + '/v1/whatsapp-booking', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'From=' + encodeURIComponent('whatsapp:' + fromInput.value.trim()) + '&Body=' + encodeURIComponent(text)
+    });
+    const raw = await res.text();
+    if (!res.ok) { add('sys', 'HTTP ' + res.status + ': ' + raw.slice(0, 200)); return; }
+    const doc = new DOMParser().parseFromString(raw, 'text/xml');
+    const msg = doc.querySelector('Message');
+    add('bot', msg ? msg.textContent : raw.slice(0, 300));
+  } catch (err) { add('sys', 'Request failed: ' + err.message + ' (check backend URL and CORS_ORIGINS)'); }
+});
+</script>
+</body>
+</html>

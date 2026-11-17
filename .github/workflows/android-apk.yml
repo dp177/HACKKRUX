@@ -1,0 +1,47 @@
+# Builds the Jeeva mobile APK on GitHub-hosted runners.
+# Repo is PUBLIC -> GitHub Actions minutes are free for public repos (no credits spent).
+# Trigger: manual (workflow_dispatch) or pushes touching mobile/.
+name: Android APK (debug)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/android-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci || npm install --no-audit --no-fund
+
+      - name: Expo prebuild (android)
+        working-directory: mobile
+        run: npx expo prebuild --platform android --no-install
+        env:
+          CI: 1
+
+      - name: Assemble debug APK
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jeeva-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/*.apk

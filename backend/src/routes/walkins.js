@@ -10,6 +10,12 @@ const { Patient, TriageRecord } = require('../models');
 const { generateTempPassword, sendPatientCredentialsEmail } = require('../utils/credentials');
 
 const router = express.Router();
+const portalService = require('../features/hospital-portal/hospitalPortalService');
+
+async function requireHospitalStaff(req, res, next) {
+  try { await portalService.authenticateHospitalStaff(req); next(); }
+  catch (e) { res.status(401).json({ error: e.message || 'Hospital staff authentication required' }); }
+}
 const TRIAGE_ENGINE_URL = process.env.TRIAGE_ENGINE_URL || 'http://localhost:5001';
 const DESK_SCANNER_CODE = process.env.DESK_SCANNER_CODE || 'FRONTDESK-QR-001';
 
@@ -170,7 +176,7 @@ router.post('/self-checkin', async (req, res) => {
 });
 
 // Receptionist assisted walk-in (can create patient + send credentials)
-router.post('/receptionist-checkin', async (req, res) => {
+router.post('/receptionist-checkin', requireHospitalStaff, async (req, res) => {
   try {
     const {
       existingPatientId,

@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { adminBasicAuth } = require('../middleware/adminBasicAuth');
 const mongoose = require('mongoose');
 const { Hospital, Department, Doctor, TriageRecord } = require('../models');
 const { ensureHospitalQrCode } = require('../utils/hospitalQr');
@@ -129,7 +130,7 @@ router.get('/:hospitalId/qr', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', adminBasicAuth, async (req, res) => {
   try {
     const { name, code, address, city, state, phone, email } = req.body;
 

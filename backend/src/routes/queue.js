@@ -77,6 +77,12 @@ router.get('/patient/:patientId/status', authenticateAny, async (req, res) => {
 });
 
 router.get('/department/:departmentId', authenticateDoctor, async (req, res) => {
+  const { Department } = require('../models');
+  const dept = await Department.findById(req.params.departmentId);
+  if (!dept) return res.status(404).json({ error: 'Department not found' });
+  if (String(dept.hospitalId) !== String(req.doctor.hospitalId)) {
+    return res.status(403).json({ error: 'Access denied: department belongs to another hospital' });
+  }
   try {
     const { departmentId } = req.params;
     console.log('[QueueRoute] department_queue_start', {

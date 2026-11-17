@@ -129,7 +129,7 @@ const triageRecordSchema = new mongoose.Schema({
   inputMode: {
     type: String,
     enum: ['text', 'voice'],
-    default: null
+    default: 'text'
   },
   conversationHistory: {
     type: [{

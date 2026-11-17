@@ -4,6 +4,44 @@
  */
 
 const express = require('express');
+const { authenticateDoctor } = require('../middleware/auth');
+const crypto = require('crypto');
+
+// Twilio webhook signature verification (https://www.twilio.com/docs/usage/security#validating-requests)
+// Enforced when TWILIO_AUTH_TOKEN is configured. Production deployments must set it.
+// Channel gate: the WhatsApp channel must be explicitly enabled. A disabled channel DENIES
+// all webhook/history traffic (never silently accepts unsigned traffic). In production the
+// channel is disabled unless WHATSAPP_CHANNEL_ENABLED=true; in development it defaults on.
+function whatsappChannelGate(req, res, next) {
+  const flag = String(process.env.WHATSAPP_CHANNEL_ENABLED || '').trim().toLowerCase();
+  const enabled = flag === 'true' || (process.env.NODE_ENV !== 'production' && flag !== 'false');
+  if (!enabled) return res.status(403).json({ error: 'WhatsApp channel is disabled on this deployment' });
+  next();
+}
+
+function verifyTwilioSignature(req, res, next) {
+  const authToken = String(process.env.TWILIO_AUTH_TOKEN || '').trim();
+  if (!authToken) {
+    // Fail closed in production: unsigned webhook traffic is denied, the app still boots.
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({ error: 'Webhook signature verification is not configured' });
+    }
+    return next(); // dev/simulation mode only
+  }
+  const signature = req.headers['x-twilio-signature'];
+  if (!signature) return res.status(403).json({ error: 'Missing Twilio signature' });
+  const base = String(process.env.TWILIO_WEBHOOK_PUBLIC_URL || '').trim()
+    || `${req.protocol}://${req.get('host')}${req.baseUrl}${req.path}`;
+  let data = base;
+  Object.keys(req.body || {}).sort().forEach((k) => { data += k + req.body[k]; });
+  const expected = crypto.createHmac('sha1', authToken).update(Buffer.from(data, 'utf-8')).digest('base64');
+  const a = Buffer.from(String(signature)), b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(403).json({ error: 'Invalid Twilio signature' });
+  }
+  next();
+}
+
 const router = express.Router();
 const {
   Hospital,
@@ -471,7 +509,7 @@ async function getActiveConversation(senderId) {
   return conversation;
 }
 
-router.post('/whatsapp-booking', async (req, res) => {
+router.post('/whatsapp-booking', whatsappChannelGate, verifyTwilioSignature, async (req, res) => {
   const traceId = buildTraceId();
   res.locals.traceId = traceId;
   const requestStartedAt = Date.now();
@@ -1078,7 +1116,7 @@ router.post('/whatsapp-booking', async (req, res) => {
   }
 });
 
-router.post('/whatsapp-booking/status', async (req, res) => {
+router.post('/whatsapp-booking/status', whatsappChannelGate, verifyTwilioSignature, async (req, res) => {
   try {
     const payload = req.body || {};
     const messageSid = payload.MessageSid || payload.SmsSid || null;
@@ -1108,7 +1146,7 @@ router.post('/whatsapp-booking/status', async (req, res) => {
   }
 });
 
-router.get('/whatsapp-booking/history/:senderId', async (req, res) => {
+router.get('/whatsapp-booking/history/:senderId', whatsappChannelGate, authenticateDoctor, async (req, res) => {
   try {
     const senderId = normalizePhone(req.params.senderId);
     const limit = Math.min(Number(req.query.limit || 5), 20);
@@ -1118,10 +1156,17 @@ router.get('/whatsapp-booking/history/:senderId', async (req, res) => {
       .limit(limit)
       .populate('patientId', 'firstName lastName phone email');
 
+    // Tenant isolation: a doctor may only view conversations tied to their own hospital.
+    const doctorHospitalId = String(req.doctor.hospitalId || '');
+    const scoped = conversations.filter((c) => {
+      const convHospitalId = String(c.collectedData?.hospitalId || '');
+      return convHospitalId && convHospitalId === doctorHospitalId;
+    });
+
     return res.json({
       senderId,
-      total: conversations.length,
-      conversations: conversations.map((c) => ({
+      total: scoped.length,
+      conversations: scoped.map((c) => ({
         id: c._id,
         status: c.status,
         step: c.step,

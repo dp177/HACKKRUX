@@ -5,6 +5,7 @@
 
 const express = require('express');
 const router = express.Router();
+const { adminBasicAuth } = require('../middleware/adminBasicAuth');
 const { Department, Doctor, TriageRecord, Patient, Hospital } = require('../models');
 const { authenticateDoctor } = require('../middleware/auth');
 
@@ -150,7 +151,7 @@ router.get('/:departmentId', async (req, res) => {
 // CREATE DEPARTMENT (Hospital Admin)
 // ═══════════════════════════════════════════════════════════════
 
-router.post('/', async (req, res) => {
+router.post('/', adminBasicAuth, async (req, res) => {
   try {
     const { hospitalId, name, code, description, floor, capacity } = req.body;
     
@@ -243,6 +244,9 @@ router.get('/:departmentId/queue', authenticateDoctor, async (req, res) => {
     if (!department) {
       return res.status(404).json({ error: 'Department not found' });
     }
+    if (String(department.hospitalId) !== String(req.doctor.hospitalId)) {
+      return res.status(403).json({ error: 'Access denied: department belongs to another hospital' });
+    }
     
     // Get patients in queue for this department
     const queuedPatients = await TriageRecord.find({
@@ -291,6 +295,9 @@ router.get('/:departmentId/stats', authenticateDoctor, async (req, res) => {
     const department = await Department.findById(departmentId);
     if (!department) {
       return res.status(404).json({ error: 'Department not found' });
+    }
+    if (String(department.hospitalId) !== String(req.doctor.hospitalId)) {
+      return res.status(403).json({ error: 'Access denied: department belongs to another hospital' });
     }
     
     // Get doctor count

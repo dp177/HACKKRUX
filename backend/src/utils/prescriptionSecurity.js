@@ -46,6 +46,9 @@ function buildPrescriptionHashPayload({ patientId, doctorId, consultationId, for
 function generatePrescriptionHash(payload) {
   const text = toStableString(payload);
   const secret = String(process.env.PRESCRIPTION_HASH_SECRET || '').trim();
+  if (!secret && process.env.NODE_ENV === 'production') {
+    throw new Error('PRESCRIPTION_HASH_SECRET must be set in production - refusing to issue unkeyed prescription hashes');
+  }
   return secret
     ? crypto.createHmac('sha256', secret).update(text).digest('hex')
     : crypto.createHash('sha256').update(text).digest('hex');
