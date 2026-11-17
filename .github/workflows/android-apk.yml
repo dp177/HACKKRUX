@@ -39,7 +39,12 @@ jobs:
       - name: Assemble debug APK
         working-directory: mobile/android
         # The voice module still depends on Android Support 28; migrate it to AndroidX.
-        run: ./gradlew assembleDebug --no-daemon -Pandroid.enableJetifier=true
+        # Jetifying react-android exceeds Expo's default 2 GiB Gradle heap.
+        # Keep concurrency bounded on the standard 16 GiB public-repo runner.
+        run: >-
+          ./gradlew assembleDebug --no-daemon --no-parallel --max-workers=2
+          -Pandroid.enableJetifier=true
+          '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8'
 
       - uses: actions/upload-artifact@v4
         with:
