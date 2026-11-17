@@ -25,8 +25,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
+      # Use the runner's preinstalled Android SDK via ANDROID_HOME.
       - name: Install dependencies
         working-directory: mobile
         run: npm ci || npm install --no-audit --no-fund
