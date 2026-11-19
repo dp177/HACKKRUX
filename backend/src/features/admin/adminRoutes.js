@@ -26,8 +26,7 @@ function parseBasicAuth(authorizationHeader) {
 
 function requireAdminBasicAuth(req, res, next) {
   const expectedUsername = String(process.env.ADMIN_BASIC_USER || 'admin').trim();
-  const expectedPassword = String(process.env.ADMIN_BASIC_PASSWORD || '').trim()
-    || (process.env.NODE_ENV === 'production' ? null : 'jeevaadmin123');
+  const expectedPassword = String(process.env.ADMIN_BASIC_PASSWORD || '').trim();
 
   if (!expectedPassword) {
     return res.status(503).json({ error: 'Admin access is not configured on this deployment' });
