@@ -1,12 +1,10 @@
-# DRAFT - NOT PUSHED. Standalone (JS-bundle-embedded) APK variant of android-apk.yml.
-# Differences from the live workflow: injects production endpoints via Expo public env,
-# builds assembleRelease (Expo prebuild auto-bundles JS via export:embed on release),
-# signs with the auto-generated debug keystore (fine for internal testing, NOT store upload).
-# Replace placeholder env values with live URLs after deployment. Needs user approval + per-push Allow.
+# Standalone (JS-bundle-embedded) APK for internal testing.
+# Injects production endpoints via Expo public env; builds assembleRelease
+# (Expo prebuild auto-bundles JS on release); debug-keystore signed
+# (fine for internal testing, NOT store upload). Builds the restoration branch.
 name: Android APK (standalone, internal test)
 
-on:
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 jobs:
   build:
@@ -16,6 +14,8 @@ jobs:
       EXPO_PUBLIC_TRIAGE_AI_URL: https://hackkrux-triage-ai.onrender.com
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: restoration-2026-11-17
       - uses: actions/setup-node@v4
         with:
           node-version: 22
