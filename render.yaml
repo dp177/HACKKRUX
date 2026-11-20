@@ -53,9 +53,9 @@ services:
 #    - Plan: Free (or paid if you want better uptime)
 #
 # 3. Add Environment Variables in Render Dashboard:
-#    MONGODB_URI=mongodb+srv://dp177:dp177@hack.hq0o67r.mongodb.net/triage_db?retryWrites=true&w=majority&appName=hack
+#    MONGODB_URI=(paste your MongoDB Atlas connection string - keep credentials out of git)
 #    JWT_SECRET=(generate new: openssl rand -base64 32)
-#    GOOGLE_CLIENT_SECRET=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
+#    GOOGLE_CLIENT_SECRET=(paste from Google Cloud console - keep secrets out of git)
 #    GOOGLE_MOBILE_CALLBACK_URL=https://your-service-name.onrender.com/api/auth/google/mobile/callback
 #
 # 4. Update Google Console Authorized Redirect URIs:
