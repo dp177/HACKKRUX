@@ -136,9 +136,9 @@ export default function HeroSection() {
               className="mt-10 flex flex-wrap items-center gap-6"
             >
               {[
-                { icon: RiShieldCheckLine, text: 'HIPAA Ready' },
-                { icon: RiCheckLine, text: '99.9% Uptime' },
-                { icon: RiTimeLine, text: 'Real-time AI' },
+                { icon: RiShieldCheckLine, text: 'Hospital onboarding portal' },
+                { icon: RiCheckLine, text: 'Digital queue management' },
+                { icon: RiTimeLine, text: 'AI-assisted symptom triage' },
               ].map(({ icon: Icon, text }) => (
                 <div key={text} className="flex items-center gap-2 text-sm text-slate-500">
                   <Icon className="h-4 w-4 text-accent-500" />

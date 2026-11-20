@@ -65,9 +65,8 @@ export default function HospitalOnboardingPage() {
     setIsSubmitting(true);
 
     try {
-      const recipientEmail = form.contactEmail;
       await submitHospitalOnboardingRequest(form);
-      toast.success(`Request submitted successfully. Email sent to ${recipientEmail}`);
+      toast.success('Request submitted successfully. Our team will review it and activate your hospital.');
       setForm(initialForm);
     } catch (error) {
       toast.error(error.message || 'Failed to submit onboarding request');
