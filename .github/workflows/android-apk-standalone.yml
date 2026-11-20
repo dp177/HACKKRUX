@@ -1,0 +1,43 @@
+# DRAFT - NOT PUSHED. Standalone (JS-bundle-embedded) APK variant of android-apk.yml.
+# Differences from the live workflow: injects production endpoints via Expo public env,
+# builds assembleRelease (Expo prebuild auto-bundles JS via export:embed on release),
+# signs with the auto-generated debug keystore (fine for internal testing, NOT store upload).
+# Replace placeholder env values with live URLs after deployment. Needs user approval + per-push Allow.
+name: Android APK (standalone, internal test)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      EXPO_PUBLIC_API_BASE_URL: https://jeeva-hackcrux.onrender.com/api
+      EXPO_PUBLIC_TRIAGE_AI_URL: https://hackkrux-triage-ai.onrender.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci || npm install --no-audit --no-fund
+      - name: Expo prebuild (android)
+        working-directory: mobile
+        run: npx expo prebuild --platform android --no-install
+        env:
+          CI: 1
+      - name: Assemble release APK (bundles JS, debug-keystore signed)
+        working-directory: mobile/android
+        run: >-
+          ./gradlew assembleRelease --no-daemon --no-parallel --max-workers=2
+          -Pandroid.enableJetifier=true
+          '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jeeva-standalone-apk
+          path: mobile/android/app/build/outputs/apk/release/*.apk
