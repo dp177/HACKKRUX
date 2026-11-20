@@ -80,6 +80,16 @@ async function approveOnboardingRequest(requestId, payload = {}) {
     throw new Error('Onboarding request not found');
   }
 
+  // Retry-safe: if a previous approval created the hospital and staff but the
+  // credentials email failed, re-approving resends credentials instead of
+  // failing on the staff-email uniqueness check.
+  if (request.status === 'approved') {
+    if (request.credentialsEmailSent) {
+      throw new Error('Request is already approved and credentials were emailed');
+    }
+    return resendApprovalCredentials(request, { reviewedBy, reviewNotes });
+  }
+
   if (request.status !== 'pending') {
     throw new Error('Only pending requests can be approved');
   }
@@ -147,6 +157,43 @@ async function approveOnboardingRequest(requestId, payload = {}) {
     staff,
     credentialsEmail: emailResult
   };
+}
+
+async function resendApprovalCredentials(request, { reviewedBy, reviewNotes } = {}) {
+  const hospital = request.approvedHospitalId
+    ? await Hospital.findById(request.approvedHospitalId)
+    : null;
+  const staff = await HospitalStaff.findOne({ email: request.contactEmail });
+
+  if (!hospital || !staff) {
+    throw new Error('Approved request is missing its hospital or staff record; manual review required');
+  }
+
+  const temporaryPassword = generateTempPassword(12);
+  staff.passwordHash = await bcrypt.hash(temporaryPassword, SALT_ROUNDS);
+  await staff.save();
+
+  let emailResult = { sent: false, reason: 'Not attempted' };
+  try {
+    emailResult = await sendHospitalCredentialsEmail({
+      to: request.contactEmail,
+      contactName: request.contactName,
+      hospitalName: hospital.name,
+      loginEmail: request.contactEmail,
+      temporaryPassword
+    });
+  } catch (error) {
+    emailResult = { sent: false, reason: error.message };
+  }
+
+  request.reviewNotes = reviewNotes || request.reviewNotes;
+  request.reviewedBy = reviewedBy || request.reviewedBy;
+  request.reviewedAt = new Date();
+  request.credentialsEmailSent = Boolean(emailResult.sent);
+  request.credentialsEmailReason = emailResult.sent ? null : (emailResult.reason || 'Unknown email error');
+  await request.save();
+
+  return { request, hospital, staff, credentialsEmail: emailResult, resent: true };
 }
 
 async function rejectOnboardingRequest(requestId, payload = {}) {

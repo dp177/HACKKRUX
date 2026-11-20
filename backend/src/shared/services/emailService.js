@@ -50,7 +50,11 @@ function createMailer() {
     auth: {
       user,
       pass
-    }
+    },
+    // Fail fast instead of hanging for minutes when the host blocks SMTP.
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000
   });
 }
 
