@@ -250,7 +250,7 @@ router.post('/register/patient', async (req, res) => {
         to: patient.email,
         patientName,
         loginId: patient.phone,
-        temporaryPassword: password
+        includePassword: false
       });
     } catch (mailError) {
       credentialsEmail = { sent: false, reason: mailError.message };

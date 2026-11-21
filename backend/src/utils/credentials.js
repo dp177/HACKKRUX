@@ -30,17 +30,21 @@ function createMailer() {
   });
 }
 
-async function sendPatientCredentialsEmail({ to, patientName, loginId, temporaryPassword }) {
+async function sendPatientCredentialsEmail({ to, patientName, loginId, temporaryPassword, includePassword = true }) {
   const transporter = createMailer();
   if (!transporter) {
     return { sent: false, reason: 'Email transport not configured' };
   }
 
+  const text = includePassword
+    ? `Hello ${patientName},\n\nYour patient dashboard credentials are ready.\nLogin ID: ${loginId}\nPassword: ${temporaryPassword}\n\nPlease log in and change your password after first sign-in.\n\n- Hospital Desk`
+    : `Hello ${patientName},\n\nYour patient account is ready.\nLogin ID: ${loginId}\n\nSign in with the password you set during registration.\n\n- Hospital Desk`;
+
   await transporter.sendMail({
     from: process.env.EMAIL_USER,
     to,
     subject: 'Your Patient Dashboard Credentials',
-    text: `Hello ${patientName},\n\nYour patient dashboard credentials are ready.\nLogin ID: ${loginId}\nPassword: ${temporaryPassword}\n\nPlease log in and change your password after first sign-in.\n\n- Hospital Desk`
+    text
   });
 
   return { sent: true };
