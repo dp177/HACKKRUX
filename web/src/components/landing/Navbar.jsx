@@ -118,8 +118,11 @@ export default function Navbar() {
 
           {/* Desktop CTA */}
           <div className="hidden items-center gap-3 md:flex">
+            <Button variant="ghost" size="sm" onClick={() => (window.location.href = '/patient-signin')}>
+              Patient Sign In
+            </Button>
             <Button variant="ghost" size="sm" onClick={() => (window.location.href = '/doctor-signin')}>
-              Sign In
+              Doctor Sign In
             </Button>
             <Button variant="primary" size="sm" onClick={() => (window.location.href = '/hospital-onboarding')}>
               Onboard Hospital
@@ -161,9 +164,17 @@ export default function Navbar() {
                   variant="outline"
                   size="sm"
                   className="flex-1"
+                  onClick={() => (window.location.href = '/patient-signin')}
+                >
+                  Patient Sign In
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
                   onClick={() => (window.location.href = '/doctor-signin')}
                 >
-                  Sign In
+                  Doctor Sign In
                 </Button>
                 <Button
                   variant="primary"

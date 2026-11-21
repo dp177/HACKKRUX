@@ -350,3 +350,17 @@ export async function hospitalPortalGetDoctors(token) {
     }
   });
 }
+
+export async function patientSignup(payload) {
+  return request('/auth/register/patient', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function patientLogin(phone, password) {
+  return request('/auth/login/patient', {
+    method: 'POST',
+    body: JSON.stringify({ phone, password })
+  });
+}
