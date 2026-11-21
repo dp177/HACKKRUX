@@ -27,7 +27,7 @@ export default function Footer() {
               <span className="text-xl font-bold tracking-tight text-slate-900">Jeeva</span>
             </a>
             <p className="mb-5 max-w-xs text-sm text-slate-500 leading-relaxed">
-              AI-powered clinical triage and decision support for modern hospitals. Smarter care, faster decisions.
+              AI-assisted clinical triage and decision support for modern hospitals. Smarter care, faster decisions.
             </p>
           </div>
 

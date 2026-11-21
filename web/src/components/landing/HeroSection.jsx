@@ -73,7 +73,7 @@ export default function HeroSection() {
             >
               <Badge className="mb-6 gap-1.5">
                 <RiBrainLine className="h-3 w-3" />
-                AI-Powered Healthcare Platform
+                AI-Assisted Healthcare Platform
               </Badge>
             </motion.div>
 

@@ -40,7 +40,7 @@ const cards = [
     audience: 'For Patients',
     title: 'Mobile Triage Assistant',
     description:
-      'AI-powered symptom assessment in the patient\'s hands. Evaluate severity, get recommended department routing, and book appointments before arriving at the hospital.',
+      'AI-assisted symptom assessment in the patient\'s hands. Evaluate severity, get recommended department routing, and book appointments before arriving at the hospital.',
     link: '#',
     cardBg: 'bg-white',
     iconBg: 'bg-accent-600',

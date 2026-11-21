@@ -8,7 +8,7 @@ import CTASection from '../components/landing/CTASection';
 import Footer from '../components/landing/Footer';
 
 export const metadata = {
-  title: 'Jeeva — AI-Powered Clinical Triage & Decision Support',
+  title: 'Jeeva — Clinical Triage & Decision Support',
   description:
     'Helping hospitals prioritize patients, assist doctors with intelligent triage, and streamline medical workflows.',
 };
