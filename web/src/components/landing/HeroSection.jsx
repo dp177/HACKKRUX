@@ -84,7 +84,6 @@ export default function HeroSection() {
               transition={{ duration: 0.55, delay: 0.08 }}
               className="mb-6 text-5xl font-bold leading-[1.1] tracking-tight text-slate-900 md:text-6xl lg:text-[4rem]"
             >
-              AI-Powered{' '}
               <span className="text-accent-700">
                 Clinical Triage
               </span>{' '}
